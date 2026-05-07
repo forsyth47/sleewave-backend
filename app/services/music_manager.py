@@ -2,13 +2,15 @@ from app.interfaces.music_provider import IMusicProvider
 from app.providers.youtube import YouTubeProvider
 from app.providers.vk import VKProvider
 from app.providers.soundcloud import SoundCloudProvider
+from app.providers.ytmusic import YTMusicProvider
 
 class MusicManager:
     def __init__(self):
         self._providers: dict[str, IMusicProvider] = {
-            "youtube": YouTubeProvider(),
+            "yt": YouTubeProvider(),
             "vk": VKProvider(),
-            "soundcloud": SoundCloudProvider()
+            "sc": SoundCloudProvider(),
+            "ytm": YTMusicProvider()  # Временно используем YouTubeProvider для YTM, можно заменить на отдельный класс
         }
 
     async def search(self, source: str, query: str, limit: int = 10, offset: int = 0):
