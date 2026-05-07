@@ -56,3 +56,31 @@ class YouTubeProvider(IMusicProvider):
                 return info.get('url') # Это и есть прямая ссылка для плеера
 
         return await loop.run_in_executor(None, extract_url)
+
+    async def download(self, track_id: str, output_path: str) -> bool:
+        # Скачиваем трек в указанный путь
+        loop = asyncio.get_event_loop()
+        url = f"https://www.youtube.com/watch?v={track_id}"
+        
+        # Настройки для скачивания
+        download_opts = self.ydl_opts.copy()
+        download_opts.update({
+            'outtmpl': output_path,  # Путь для сохранения
+            'format': 'bestaudio/best',
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }],
+        })
+        
+        def download_track():
+            with YoutubeDL(download_opts) as ydl:
+                ydl.download([url])
+        
+        try:
+            await loop.run_in_executor(None, download_track)
+            return True
+        except Exception as e:
+            print(f"Download failed: {e}")
+            return False

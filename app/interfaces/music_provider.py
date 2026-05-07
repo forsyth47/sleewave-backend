@@ -11,3 +11,8 @@ class IMusicProvider(ABC):
     async def get_stream(self, track_id: str) -> str:
         """get the direct stream URL for a track"""
         pass
+
+    @abstractmethod
+    async def download(self, track_id: str, output_path: str) -> bool:
+        """download the track to the specified path"""
+        pass

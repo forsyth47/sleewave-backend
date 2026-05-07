@@ -78,3 +78,28 @@ class YTMusicProvider(IMusicProvider):
         except Exception as e:
             print(f"❌ YTMusic Stream Error: {e}")
             return ""
+
+    async def download(self, track_id: str, output_path: str) -> bool:
+        loop = asyncio.get_event_loop()
+        url = f"https://music.youtube.com/watch?v={track_id}"
+        
+        download_opts = self.ydl_opts.copy()
+        download_opts.update({
+            'outtmpl': output_path,
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }],
+        })
+        
+        def download_track():
+            with YoutubeDL(download_opts) as ydl:
+                ydl.download([url])
+        
+        try:
+            await loop.run_in_executor(None, download_track)
+            return True
+        except Exception as e:
+            print(f"Download failed: {e}")
+            return False
