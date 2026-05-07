@@ -1,120 +1,92 @@
+from __future__ import annotations
+
 import asyncio
+from pathlib import Path
+from typing import Optional
+
 from yt_dlp import YoutubeDL
-from app.interfaces.music_provider import IMusicProvider
+
 from app.domain.models import Track
+from app.interfaces.music_provider import IMusicProvider
+from app.providers.download_helpers import ensure_ffmpeg_available
+
 
 class SoundCloudProvider(IMusicProvider):
-    def __init__(self):
-        self.common_opts = {
-            'format': 'bestaudio/best',
-            'noplaylist': True,
-            'quiet': True,
-            'no_warnings': True,
-            'nocheckcertificate': True,
-            'ignoreerrors': True,  # Пропускать ошибки (в т.ч. 404)
-            'suppress_warnings': True,
+    def __init__(self) -> None:
+        self.common_options = {
+            "format": "bestaudio/best",
+            "noplaylist": True,
+            "quiet": True,
+            "no_warnings": True,
+            "nocheckcertificate": True,
+            "ignoreerrors": True,
+            "suppress_warnings": True,
         }
 
     async def search(self, query: str, limit: int = 10, offset: int = 0) -> list[Track]:
-        loop = asyncio.get_event_loop()
-        valid_tracks = []
-        current_offset = offset
-        attempts = 0
-        max_attempts = 3  # Чтобы не долбиться вечно, если выдача совсем мертвая
+        loop = asyncio.get_running_loop()
+        search_query = f"scsearch{limit + offset + 10}:{query}"
 
-        while len(valid_tracks) < limit and attempts < max_attempts:
-            # Запрашиваем порцию (чуть больше лимита для эффективности)
-            fetch_count = limit * 2 
-            search_query = f"scsearch{fetch_count}:{query}"
-            
-            # В yt-dlp для поиска через scsearch нет параметра начала отсчета (offset),
-            # поэтому мы просто берем большой кусок и вырезаем нужное.
-            # Но чтобы "добирать", нам нужно увеличивать окно поиска.
-            search_query = f"scsearch{current_offset + fetch_count}:{query}"
+        def fetch_results():
+            with YoutubeDL(self.common_options) as ydl:
+                return ydl.extract_info(search_query, download=False)
 
-            def fetch_info():
-                with YoutubeDL(self.common_opts) as ydl:
-                    return ydl.extract_info(search_query, download=False)
-
-            try:
-                data = await loop.run_in_executor(None, fetch_info)
-                if not data or 'entries' not in data:
-                    break
-
-                # Фильтруем то, что уже нашли, и убираем битые (None)
-                new_entries = [
-                    e for e in data['entries'][current_offset:] 
-                    if e is not None and e.get('url')
-                ]
-
-                for entry in new_entries:
-                    track = Track(
-                        id=entry.get('webpage_url') or entry.get('url'),
-                        title=entry.get('title', 'Unknown Title'),
-                        artist=entry.get('uploader', 'Unknown Artist'),
-                        source='soundcloud',
-                        duration=int(entry.get('duration', 0)),
-                        cover_url=entry.get('thumbnail'),
-                        stream_url=None
-                    )
-                    valid_tracks.append(track)
-                    
-                    # Если набрали нужное количество — выходим из цикла по записям
-                    if len(valid_tracks) >= limit:
-                        break
-
-                # Если всё еще не набрали — сдвигаем "окно" поиска дальше
-                current_offset += fetch_count
-                attempts += 1
-
-            except Exception as e:
-                print(f"⚠️ Ошибка при дозагрузке SC: {e}")
+        payload = await loop.run_in_executor(None, fetch_results)
+        entries = payload.get("entries", []) if payload else []
+        results = []
+        for entry in entries[offset:]:
+            if not entry or not entry.get("url"):
+                continue
+            results.append(
+                Track(
+                    id=entry.get("webpage_url") or entry.get("url"),
+                    title=entry.get("title", "Unknown Title"),
+                    artist=entry.get("uploader", "Unknown Artist"),
+                    source="sc",
+                    duration=int(entry.get("duration") or 0),
+                    cover_url=entry.get("thumbnail"),
+                )
+            )
+            if len(results) >= limit:
                 break
-
-        # Возвращаем ровно столько, сколько просили (или сколько удалось найти)
-        return valid_tracks[:limit]
+        return results
 
     async def get_stream(self, track_id: str) -> str:
-        loop = asyncio.get_event_loop()
-        
-        def extract_url():
-            # Для получения стрима используем максимально легкие настройки
-            with YoutubeDL(self.common_opts) as ydl:
+        loop = asyncio.get_running_loop()
+
+        def extract_stream_url():
+            with YoutubeDL(self.common_options) as ydl:
                 info = ydl.extract_info(track_id, download=False)
-                if info:
-                    return info.get('url')
-                return None
+                return info.get("url", "") if info else ""
 
-        try:
-            stream_url = await loop.run_in_executor(None, extract_url)
-            if not stream_url:
-                print(f"⚠️ Не удалось получить поток для {track_id} (возможно, 404 или Go+)")
-                return ""
-            return stream_url
-        except Exception as e:
-            print(f"❌ SC Stream Error: {e}")
-            return ""
+        return await loop.run_in_executor(None, extract_stream_url)
 
-    async def download(self, track_id: str, output_path: str) -> bool:
-        loop = asyncio.get_event_loop()
-        
-        download_opts = self.common_opts.copy()
-        download_opts.update({
-            'outtmpl': output_path,
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }],
-        })
-        
+    async def download(self, track_id: str, output_path: str) -> Optional[str]:
+        loop = asyncio.get_running_loop()
+        final_path = Path(output_path)
+        output_template = str(final_path.with_suffix(".%(ext)s"))
+
+        download_options = {
+            **self.common_options,
+            "outtmpl": output_template,
+            "overwrites": True,
+            "postprocessors": [
+                {
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": "mp3",
+                    "preferredquality": "192",
+                }
+            ],
+            "final_ext": "mp3",
+        }
+
         def download_track():
-            with YoutubeDL(download_opts) as ydl:
+            ensure_ffmpeg_available()
+            with YoutubeDL(download_options) as ydl:
                 ydl.download([track_id])
-        
+            return str(final_path)
+
         try:
-            await loop.run_in_executor(None, download_track)
-            return True
-        except Exception as e:
-            print(f"Download failed: {e}")
-            return False
+            return await loop.run_in_executor(None, download_track)
+        except Exception as exc:
+            raise RuntimeError(f"SoundCloud download failed: {exc}") from exc

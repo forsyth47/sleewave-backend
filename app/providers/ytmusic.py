@@ -1,105 +1,92 @@
+from __future__ import annotations
+
 import asyncio
-from ytmusicapi import YTMusic
+from pathlib import Path
+from typing import Optional
+
 from yt_dlp import YoutubeDL
-from app.interfaces.music_provider import IMusicProvider
+from ytmusicapi import YTMusic
+
 from app.domain.models import Track
+from app.interfaces.music_provider import IMusicProvider
+from app.providers.download_helpers import ensure_ffmpeg_available
+
 
 class YTMusicProvider(IMusicProvider):
-    def __init__(self):
+    def __init__(self) -> None:
         self.ytm = YTMusic()
-        self.ydl_opts = {
-            'format': 'bestaudio/best',
-            'quiet': True,
-            'no_warnings': True,
-            'nocheckcertificate': True,
+        self.common_options = {
+            "format": "bestaudio/best",
+            "quiet": True,
+            "no_warnings": True,
+            "nocheckcertificate": True,
         }
 
     async def search(self, query: str, limit: int = 10, offset: int = 0) -> list[Track]:
-        loop = asyncio.get_event_loop()
-        
-        # Запрашиваем с запасом, чтобы компенсировать отсутствие offset в API
-        # и отфильтровать возможный мусор
-        fetch_limit = limit + offset + 5 
-        
-        def fetch_metadata():
-            # filter="songs" гарантирует, что мы не получим видео-интервью или плейлисты
+        loop = asyncio.get_running_loop()
+        fetch_limit = limit + offset + 5
+
+        def fetch_results():
             return self.ytm.search(query, filter="songs", limit=fetch_limit)
 
-        try:
-            results = await loop.run_in_executor(None, fetch_metadata)
-            if not results:
-                return []
-
-            valid_tracks = []
-            # Пропускаем offset и начинаем собирать треки
-            for res in results[offset:]:
-                # Проверка на наличие критически важных данных
-                if not res.get('videoId') or not res.get('title'):
-                    continue
-                
-                # Собираем модель Track
-                track = Track(
-                    id=res['videoId'],
-                    title=res['title'],
-                    artist=res['artists'][0]['name'] if res.get('artists') else "Unknown Artist",
-                    source="ytmusic",
-                    # В YTMusic длительность часто приходит строкой "3:45", 
-                    # если твоя модель требует int (секунды), лучше перепроверить
-                    duration=res.get('duration_seconds') or 0,
-                    cover_url=res['thumbnails'][-1]['url'] if res.get('thumbnails') else None,
-                    stream_url=None
+        payload = await loop.run_in_executor(None, fetch_results)
+        results = []
+        for item in payload[offset:]:
+            if not item.get("videoId") or not item.get("title"):
+                continue
+            results.append(
+                Track(
+                    id=item["videoId"],
+                    title=item["title"],
+                    artist=item["artists"][0]["name"] if item.get("artists") else "Unknown Artist",
+                    source="ytm",
+                    duration=int(item.get("duration_seconds") or 0),
+                    cover_url=item["thumbnails"][-1]["url"] if item.get("thumbnails") else None,
+                    album=item.get("album", {}).get("name") if item.get("album") else None,
                 )
-                valid_tracks.append(track)
-                
-                if len(valid_tracks) >= limit:
-                    break
-                    
-            return valid_tracks
-
-        except Exception as e:
-            print(f"❌ YTMusic Search Error: {e}")
-            return []
+            )
+            if len(results) >= limit:
+                break
+        return results
 
     async def get_stream(self, track_id: str) -> str:
-        """
-        Получает прямую ссылку на аудио через yt-dlp.
-        """
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         url = f"https://www.youtube.com/watch?v={track_id}"
-        
-        def extract_url():
-            with YoutubeDL(self.ydl_opts) as ydl:
+
+        def extract_stream_url():
+            with YoutubeDL(self.common_options) as ydl:
                 info = ydl.extract_info(url, download=False)
-                return info.get('url')
+                return info.get("url", "")
 
-        try:
-            stream_url = await loop.run_in_executor(None, extract_url)
-            return stream_url if stream_url else ""
-        except Exception as e:
-            print(f"❌ YTMusic Stream Error: {e}")
-            return ""
+        return await loop.run_in_executor(None, extract_stream_url)
 
-    async def download(self, track_id: str, output_path: str) -> bool:
-        loop = asyncio.get_event_loop()
+    async def download(self, track_id: str, output_path: str) -> Optional[str]:
+        loop = asyncio.get_running_loop()
         url = f"https://music.youtube.com/watch?v={track_id}"
-        
-        download_opts = self.ydl_opts.copy()
-        download_opts.update({
-            'outtmpl': output_path,
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }],
-        })
-        
+        final_path = Path(output_path)
+        output_template = str(final_path.with_suffix(".%(ext)s"))
+
+        download_options = {
+            **self.common_options,
+            "outtmpl": output_template,
+            "overwrites": True,
+            "postprocessors": [
+                {
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": "mp3",
+                    "preferredquality": "192",
+                }
+            ],
+            "final_ext": "mp3",
+        }
+
         def download_track():
-            with YoutubeDL(download_opts) as ydl:
+            ensure_ffmpeg_available()
+            with YoutubeDL(download_options) as ydl:
                 ydl.download([url])
-        
+            return str(final_path)
+
         try:
-            await loop.run_in_executor(None, download_track)
-            return True
-        except Exception as e:
-            print(f"Download failed: {e}")
-            return False
+            return await loop.run_in_executor(None, download_track)
+        except Exception as exc:
+            raise RuntimeError(f"YTMusic download failed: {exc}") from exc

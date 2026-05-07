@@ -1,18 +1,20 @@
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
+from typing import Optional
+
 from app.domain.models import Track
+
 
 class IMusicProvider(ABC):
     @abstractmethod
     async def search(self, query: str, limit: int = 10, offset: int = 0) -> list[Track]:
-        """search for tracks based on a query string"""
-        pass
+        """Search tracks for a query."""
 
     @abstractmethod
     async def get_stream(self, track_id: str) -> str:
-        """get the direct stream URL for a track"""
-        pass
+        """Return a direct upstream stream URL when available."""
 
     @abstractmethod
-    async def download(self, track_id: str, output_path: str) -> bool:
-        """download the track to the specified path"""
-        pass
+    async def download(self, track_id: str, output_path: str) -> Optional[str]:
+        """Download the track and return the final file path."""

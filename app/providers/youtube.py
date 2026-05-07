@@ -1,86 +1,91 @@
+from __future__ import annotations
+
 import asyncio
+from pathlib import Path
+from typing import Optional
+
 from yt_dlp import YoutubeDL
-from app.interfaces.music_provider import IMusicProvider
+
 from app.domain.models import Track
+from app.interfaces.music_provider import IMusicProvider
+from app.providers.download_helpers import ensure_ffmpeg_available
+
 
 class YouTubeProvider(IMusicProvider):
-    def __init__(self):
-        # Настройки для поиска и получения инфо
-        self.ydl_opts = {
-            'format': 'bestaudio/best', # Ищем только лучший звук
-            'noplaylist': True,         # Нам нужны отдельные треки, а не плейлисты
-            'quiet': True,              # Не забивать консоль лишним логом
-            'no_warnings': True,
-            'default_search': 'ytsearch', # Говорим, что будем искать в YouTube
+    def __init__(self) -> None:
+        self.common_options = {
+            "format": "bestaudio/best",
+            "noplaylist": True,
+            "quiet": True,
+            "no_warnings": True,
+            "default_search": "ytsearch",
         }
 
     async def search(self, query: str, limit: int = 10, offset: int = 0) -> list[Track]:
-        # Запускаем тяжелый процесс поиска в отдельном потоке, чтобы не блокировать FastAPI
-        loop = asyncio.get_event_loop()
-        
-        # ytsearch20:miyagi — это формат запроса для yt-dlp (искать 20 штук)
+        loop = asyncio.get_running_loop()
         search_query = f"ytsearch{limit + offset}:{query}"
-        
-        def download_info():
-            with YoutubeDL(self.ydl_opts) as ydl:
+
+        def fetch_results():
+            with YoutubeDL(self.common_options) as ydl:
                 return ydl.extract_info(search_query, download=False)
 
-        # Выполняем поиск
-        data = await loop.run_in_executor(None, download_info)
-        
-        tracks = []
-        if 'entries' in data:
-            # Делаем срез (offset), чтобы пропустить первые результаты, если нужно
-            results = data['entries'][offset : offset + limit]
-            
-            for entry in results:
-                tracks.append(Track(
-                    id=entry.get('id'),
-                    title=entry.get('title'),
-                    artist=entry.get('uploader', 'Unknown Artist'),
-                    source='youtube',
-                    duration=entry.get('duration', 0),
-                    cover_url=entry.get('thumbnail'),
-                    stream_url=None # Ссылку на поток будем получать только при клике Play
-                ))
-        return tracks
+        payload = await loop.run_in_executor(None, fetch_results)
+        entries = payload.get("entries", []) if payload else []
+        results = []
+        for entry in entries[offset : offset + limit]:
+            if not entry or not entry.get("id"):
+                continue
+            results.append(
+                Track(
+                    id=entry["id"],
+                    title=entry.get("title", "Unknown Title"),
+                    artist=entry.get("uploader", "Unknown Artist"),
+                    source="yt",
+                    duration=int(entry.get("duration") or 0),
+                    cover_url=entry.get("thumbnail"),
+                )
+            )
+        return results
 
     async def get_stream(self, track_id: str) -> str:
-        # Получаем прямую ссылку на .webm или .m4a файл
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         url = f"https://www.youtube.com/watch?v={track_id}"
-        
-        def extract_url():
-            with YoutubeDL(self.ydl_opts) as ydl:
+
+        def extract_stream_url():
+            with YoutubeDL(self.common_options) as ydl:
                 info = ydl.extract_info(url, download=False)
-                return info.get('url') # Это и есть прямая ссылка для плеера
+                return info.get("url", "")
 
-        return await loop.run_in_executor(None, extract_url)
+        return await loop.run_in_executor(None, extract_stream_url)
 
-    async def download(self, track_id: str, output_path: str) -> bool:
-        # Скачиваем трек в указанный путь
-        loop = asyncio.get_event_loop()
+    async def download(self, track_id: str, output_path: str) -> Optional[str]:
+        loop = asyncio.get_running_loop()
         url = f"https://www.youtube.com/watch?v={track_id}"
-        
-        # Настройки для скачивания
-        download_opts = self.ydl_opts.copy()
-        download_opts.update({
-            'outtmpl': output_path,  # Путь для сохранения
-            'format': 'bestaudio/best',
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }],
-        })
-        
+        final_path = Path(output_path)
+        output_template = str(final_path.with_suffix(".%(ext)s"))
+
+        download_options = {
+            **self.common_options,
+            "format": "bestaudio/best",
+            "outtmpl": output_template,
+            "overwrites": True,
+            "postprocessors": [
+                {
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": "mp3",
+                    "preferredquality": "192",
+                }
+            ],
+            "final_ext": "mp3",
+        }
+
         def download_track():
-            with YoutubeDL(download_opts) as ydl:
+            ensure_ffmpeg_available()
+            with YoutubeDL(download_options) as ydl:
                 ydl.download([url])
-        
+            return str(final_path)
+
         try:
-            await loop.run_in_executor(None, download_track)
-            return True
-        except Exception as e:
-            print(f"Download failed: {e}")
-            return False
+            return await loop.run_in_executor(None, download_track)
+        except Exception as exc:
+            raise RuntimeError(f"YouTube download failed: {exc}") from exc
