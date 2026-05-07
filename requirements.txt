@@ -5,3 +5,5 @@ python-dotenv
 httpx
 yt-dlp
 vk_api
+beautifulsoup4
+lxml
