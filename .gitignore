@@ -3,3 +3,4 @@ __pycache__/
 .env
 *.mp3
 *.m3u8.venv/
+.sleewave-cache/
