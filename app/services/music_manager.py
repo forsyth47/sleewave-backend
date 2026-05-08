@@ -8,13 +8,15 @@ from pathlib import Path
 from typing import Optional
 
 from app.domain.models import (
+    CacheRecord,
     DeviceDownloadConfirmationRequest,
     DeviceDownloadConfirmationResponse,
     DeviceLibrarySyncRequest,
     DeviceLibrarySyncResponse,
-    DeviceLibraryTrack,
-    PreparedTrackResponse,
+    DeviceTrackRef,
     SearchResponse,
+    SearchStreamEvent,
+    SearchTrackResult,
     SourceInfo,
     SourceWarning,
     Track,
@@ -32,6 +34,7 @@ from app.services.errors import (
     BadRequestError,
     ProviderNotFoundError,
     ProviderUnavailableError,
+    TrackAlreadyOnDeviceError,
 )
 from app.services.media_cache import MediaCacheService
 from app.services.search_result_store import SearchResultStore
@@ -116,16 +119,12 @@ class MusicManager:
         offset: int = 0,
         device_id: Optional[str] = None,
     ) -> SearchResponse:
-        cleaned_query = query.strip()
-        if not cleaned_query:
-            raise BadRequestError("The search query cannot be empty.")
-        if limit < 1 or limit > 100:
-            raise BadRequestError("The limit must be between 1 and 100.")
-        if offset < 0:
-            raise BadRequestError("The offset cannot be negative.")
-
-        source_ids = self._resolve_sources(source_selector)
-        fetch_limit = min(limit + offset + 10, 100)
+        cleaned_query, source_ids, fetch_limit = self.prepare_search_request(
+            source_selector,
+            query,
+            limit,
+            offset,
+        )
 
         results = await asyncio.gather(
             *(self._search_source(source_id, cleaned_query, fetch_limit) for source_id in source_ids),
@@ -163,60 +162,145 @@ class MusicManager:
             warnings=warnings,
         )
 
-    async def prepare_track(self, result_id: str) -> PreparedTrackResponse:
+    async def stream_search(
+        self,
+        source_selector: str,
+        query: str,
+        limit: int = 10,
+        offset: int = 0,
+        device_id: Optional[str] = None,
+    ):
+        cleaned_query, source_ids, fetch_limit = self.prepare_search_request(
+            source_selector,
+            query,
+            limit,
+            offset,
+        )
+        emitted = 0
+        seen = 0
+        merged_tracks: list[Track] = []
+
+        yield SearchStreamEvent(
+            event="start",
+            query=cleaned_query,
+            sources=source_ids,
+            emitted=0,
+        )
+
+        async def fetch_source(source_id: str) -> tuple[str, list[Track], Optional[Exception]]:
+            try:
+                return source_id, await self._search_source(source_id, cleaned_query, fetch_limit), None
+            except Exception as exc:
+                return source_id, [], exc
+
+        tasks = [asyncio.create_task(fetch_source(source_id)) for source_id in source_ids]
+        try:
+            for task in asyncio.as_completed(tasks):
+                source_id, tracks, error = await task
+                if error:
+                    if len(source_ids) == 1:
+                        raise ProviderUnavailableError(
+                            source_id,
+                            f"Search failed for source '{source_id}'.",
+                        ) from error
+                    yield SearchStreamEvent(
+                        event="warning",
+                        source=source_id,
+                        warning=SourceWarning(
+                            source=source_id,
+                            message=f"Search failed for source '{source_id}' and it was skipped.",
+                        ),
+                        emitted=emitted,
+                    )
+                    continue
+
+                for track in tracks:
+                    hydrated = hydrate_track_keys(track)
+                    if self._contains_duplicate(merged_tracks, hydrated):
+                        continue
+                    self._annotate_availability([hydrated], device_id)
+                    merged_tracks.append(hydrated)
+                    seen += 1
+                    if seen <= offset:
+                        continue
+                    if emitted >= limit:
+                        continue
+                    stored_track = self.search_results.store_track(hydrated)
+                    emitted += 1
+                    yield SearchStreamEvent(
+                        event="track",
+                        source=source_id,
+                        track=self._to_search_track_result(stored_track),
+                        emitted=emitted,
+                    )
+
+                if emitted >= limit:
+                    break
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+
+        yield SearchStreamEvent(
+            event="done",
+            emitted=emitted,
+        )
+
+    def prepare_search_request(
+        self,
+        source_selector: str,
+        query: str,
+        limit: int,
+        offset: int,
+    ) -> tuple[str, list[str], int]:
+        cleaned_query = query.strip()
+        if not cleaned_query:
+            raise BadRequestError("The search query cannot be empty.")
+        if limit < 1 or limit > 100:
+            raise BadRequestError("The limit must be between 1 and 100.")
+        if offset < 0:
+            raise BadRequestError("The offset cannot be negative.")
+
+        source_ids = self._resolve_sources(source_selector)
+        fetch_limit = min(limit + offset + 10, 100)
+        return cleaned_query, source_ids, fetch_limit
+
+    async def prepare_cached_track(
+        self,
+        result_id: str,
+        *,
+        device_id: Optional[str] = None,
+        block_device_duplicate: bool = False,
+    ) -> tuple[CacheRecord, bool]:
         track = hydrate_track_keys(self.search_results.get_track(result_id))
+        if block_device_duplicate and device_id and self.device_library.has_track(device_id, track):
+            raise TrackAlreadyOnDeviceError(device_id, track.track_key, track.base_track_key)
 
         async def downloader(target_path: str) -> Optional[str]:
             provider = self._get_download_provider(track.source)
             return await provider.download(track.id, target_path)
 
-        record, cache_hit = await self.cache.ensure_cached(track, downloader)
-        track.availability = TrackAvailability(
-            in_server_cache=True,
-            on_device=False,
-            cache_key=record.cache_key,
-            preferred_origin="server",
-        )
-        return PreparedTrackResponse(
-            track=track,
-            cache_key=record.cache_key,
-            cache_hit=cache_hit,
-            stream_url=f"/media/{record.cache_key}/stream",
-            download_url=f"/media/{record.cache_key}/download",
-        )
+        return await self.cache.ensure_cached(track, downloader)
 
     def sync_device_library(self, request: DeviceLibrarySyncRequest) -> DeviceLibrarySyncResponse:
         track_count = self.device_library.replace_tracks(request)
-        exact_keys, base_keys = self.device_library.iter_device_track_keys(request.device_id)
-        removed_cache_entries = self.cache.delete_by_keys(exact_keys, base_keys)
         return DeviceLibrarySyncResponse(
             device_id=request.device_id,
             track_count=track_count,
-            removed_cache_entries=removed_cache_entries,
+            server_cache_retained=True,
         )
 
     def confirm_device_download(
         self,
         request: DeviceDownloadConfirmationRequest,
     ) -> DeviceDownloadConfirmationResponse:
-        hydrated_request_track = hydrate_device_track_keys(
-            DeviceLibraryTrack(
-                title=request.title,
-                artist=request.artist,
-                duration=request.duration,
-                album=request.album,
-                track_key=request.track_key,
-                base_track_key=request.base_track_key,
-            )
-        )
-        self.device_library.add_track(request.device_id, hydrated_request_track)
-        removed = self.cache.delete_by_keys(
-            {key for key in [hydrated_request_track.track_key] if key},
-            {key for key in [hydrated_request_track.base_track_key] if key},
-        )
+        request_track = self._device_track_from_confirmation(request)
+        hydrated_request_track = hydrate_device_track_keys(request_track)
+        registered = self.device_library.add_track(request.device_id, hydrated_request_track)
         return DeviceDownloadConfirmationResponse(
             device_id=request.device_id,
-            removed_from_server_cache=removed > 0,
+            registered=registered,
+            server_cache_retained=True,
         )
 
     def get_cached_record(self, cache_key: str):
@@ -289,6 +373,34 @@ class MusicManager:
         for grouped_tracks in buckets.values():
             results.extend(grouped_tracks)
         return results
+
+    def _merge_if_duplicate(self, tracks: list[Track], incoming: Track) -> bool:
+        for existing in tracks:
+            if tracks_match(existing, incoming):
+                self._merge_track(existing, incoming)
+                return True
+        return False
+
+    def _contains_duplicate(self, tracks: list[Track], incoming: Track) -> bool:
+        return any(tracks_match(existing, incoming) for existing in tracks)
+
+    def _to_search_track_result(self, track: Track) -> SearchTrackResult:
+        availability = TrackAvailability(
+            in_server_cache=track.availability.in_server_cache,
+            on_device=track.availability.on_device,
+            preferred_origin=track.availability.preferred_origin,
+        )
+        return SearchTrackResult(
+            title=track.title,
+            artist=track.artist,
+            duration=track.duration,
+            cover_url=track.cover_url,
+            album=track.album,
+            result_id=track.result_id or "",
+            track_key=track.track_key or "",
+            base_track_key=track.base_track_key or "",
+            availability=availability,
+        )
 
     def _merge_track(self, current: Track, incoming: Track) -> None:
         existing_refs = {(ref.source, ref.track_id) for ref in current.alternate_sources}
@@ -373,3 +485,24 @@ class MusicManager:
     def _provider_priority(self, source_id: str) -> int:
         entry = self._providers.get(source_id)
         return entry.priority if entry else 1000
+
+    def _device_track_from_confirmation(
+        self,
+        request: DeviceDownloadConfirmationRequest,
+    ) -> DeviceTrackRef:
+        if request.track_key or request.base_track_key:
+            return DeviceTrackRef(
+                track_key=request.track_key,
+                base_track_key=request.base_track_key,
+            )
+
+        if request.result_id:
+            track = hydrate_track_keys(self.search_results.get_track(request.result_id))
+            return DeviceTrackRef(
+                track_key=track.track_key,
+                base_track_key=track.base_track_key,
+            )
+
+        raise BadRequestError(
+            "Provide track_key/base_track_key or result_id to confirm a download."
+        )

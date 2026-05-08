@@ -66,16 +66,26 @@ class SearchResponse(BaseModel):
     warnings: list[SourceWarning] = Field(default_factory=list)
 
 
-class TrackSelectionRequest(BaseModel):
+class SearchTrackResult(BaseModel):
+    title: str
+    artist: str
+    duration: int = 0
+    cover_url: Optional[str] = None
+    album: Optional[str] = None
     result_id: str
+    track_key: str
+    base_track_key: str
+    availability: TrackAvailability
 
 
-class PreparedTrackResponse(BaseModel):
-    track: Track
-    cache_key: str
-    cache_hit: bool
-    stream_url: str
-    download_url: str
+class SearchStreamEvent(BaseModel):
+    event: str
+    query: Optional[str] = None
+    sources: list[str] = Field(default_factory=list)
+    source: Optional[str] = None
+    track: Optional[SearchTrackResult] = None
+    warning: Optional[SourceWarning] = None
+    emitted: Optional[int] = None
 
 
 class CacheRecord(BaseModel):
@@ -102,36 +112,30 @@ class SearchResultRecord(BaseModel):
     expires_at: datetime
 
 
-class DeviceLibraryTrack(BaseModel):
-    title: str
-    artist: str
-    duration: int = 0
-    album: Optional[str] = None
+class DeviceTrackRef(BaseModel):
     track_key: Optional[str] = None
     base_track_key: Optional[str] = None
 
 
 class DeviceLibrarySyncRequest(BaseModel):
     device_id: str
-    tracks: list[DeviceLibraryTrack]
+    tracks: list[DeviceTrackRef]
 
 
 class DeviceLibrarySyncResponse(BaseModel):
     device_id: str
     track_count: int
-    removed_cache_entries: int
+    server_cache_retained: bool = True
 
 
 class DeviceDownloadConfirmationRequest(BaseModel):
     device_id: str
-    title: str
-    artist: str
-    duration: int = 0
-    album: Optional[str] = None
+    result_id: Optional[str] = None
     track_key: Optional[str] = None
     base_track_key: Optional[str] = None
 
 
 class DeviceDownloadConfirmationResponse(BaseModel):
     device_id: str
-    removed_from_server_cache: bool
+    registered: bool
+    server_cache_retained: bool = True

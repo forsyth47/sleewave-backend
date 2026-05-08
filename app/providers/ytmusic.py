@@ -12,6 +12,12 @@ from app.interfaces.music_provider import IMusicProvider
 from app.providers.download_helpers import ensure_ffmpeg_available
 
 
+def _high_res_thumbnail(url: Optional[str]) -> Optional[str]:
+    if not url:
+        return None
+    return url.replace("w120-h120", "w544-h544").replace("w60-h60", "w544-h544")
+
+
 class YTMusicProvider(IMusicProvider):
     def __init__(self) -> None:
         self.ytm = YTMusic()
@@ -41,7 +47,7 @@ class YTMusicProvider(IMusicProvider):
                     artist=item["artists"][0]["name"] if item.get("artists") else "Unknown Artist",
                     source="ytm",
                     duration=int(item.get("duration_seconds") or 0),
-                    cover_url=item["thumbnails"][-1]["url"] if item.get("thumbnails") else None,
+                    cover_url=_high_res_thumbnail(item["thumbnails"][-1]["url"]) if item.get("thumbnails") else None,
                     album=item.get("album", {}).get("name") if item.get("album") else None,
                 )
             )

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from app.domain.models import DeviceLibrarySyncRequest, DeviceLibraryTrack, Track
+from app.domain.models import DeviceLibrarySyncRequest, DeviceTrackRef, Track
 from app.services.track_identity import hydrate_device_track_keys, hydrate_track_keys
 
 
@@ -30,25 +30,29 @@ class DeviceLibraryService:
         device_tracks = self._load()["devices"].get(device_id, {}).get("tracks", [])
         hydrated_track = hydrate_track_keys(track)
         for item in device_tracks:
-            if item.get("track_key") == hydrated_track.track_key:
+            if hydrated_track.track_key and item.get("track_key") == hydrated_track.track_key:
                 return True
-            if item.get("base_track_key") == hydrated_track.base_track_key:
+            if hydrated_track.base_track_key and item.get("base_track_key") == hydrated_track.base_track_key:
                 return True
         return False
 
-    def add_track(self, device_id: str, track: DeviceLibraryTrack) -> None:
+    def add_track(self, device_id: str, track: DeviceTrackRef) -> bool:
         payload = self._load()
         hydrated_track = hydrate_device_track_keys(track)
         device_payload = payload["devices"].setdefault(device_id, {"tracks": []})
         current_tracks = device_payload["tracks"]
 
         for item in current_tracks:
-            if item.get("track_key") == hydrated_track.track_key:
+            if hydrated_track.track_key and item.get("track_key") == hydrated_track.track_key:
                 self._save(payload)
-                return
+                return False
+            if hydrated_track.base_track_key and item.get("base_track_key") == hydrated_track.base_track_key:
+                self._save(payload)
+                return False
 
         current_tracks.append(_model_to_dict(hydrate_device_track_keys(track)))
         self._save(payload)
+        return True
 
     def iter_device_track_keys(self, device_id: str) -> tuple[set[str], set[str]]:
         device_tracks = self._load()["devices"].get(device_id, {}).get("tracks", [])

@@ -11,6 +11,16 @@ from app.interfaces.music_provider import IMusicProvider
 from app.providers.download_helpers import ensure_ffmpeg_available
 
 
+def _high_res_artwork(url: Optional[str]) -> Optional[str]:
+    if not url:
+        return None
+    return (
+        url.replace("large.jpg", "t500x500.jpg")
+        .replace("t300x300.jpg", "t500x500.jpg")
+        .replace("crop.jpg", "t500x500.jpg")
+    )
+
+
 class SoundCloudProvider(IMusicProvider):
     def __init__(self) -> None:
         self.common_options = {
@@ -44,7 +54,7 @@ class SoundCloudProvider(IMusicProvider):
                     artist=entry.get("uploader", "Unknown Artist"),
                     source="sc",
                     duration=int(entry.get("duration") or 0),
-                    cover_url=entry.get("thumbnail"),
+                    cover_url=_high_res_artwork(entry.get("thumbnail")),
                 )
             )
             if len(results) >= limit:

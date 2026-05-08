@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
+from collections.abc import AsyncIterator
+from pathlib import Path
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from app.domain.models import (
     ApiError,
@@ -15,12 +19,12 @@ from app.domain.models import (
     DeviceLibrarySyncRequest,
     DeviceLibrarySyncResponse,
     ErrorResponse,
-    PreparedTrackResponse,
-    SearchResponse,
-    TrackSelectionRequest,
+    SearchStreamEvent,
 )
 from app.services.errors import MusicServiceError
 from app.services.music_manager import MusicManager
+
+load_dotenv(Path(__file__).resolve().parent / ".env")
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +54,31 @@ def _safe_file_name(title: str, artist: str) -> str:
     value = f"{artist} - {title}.mp3"
     sanitized = re.sub(r'[^A-Za-z0-9._ -]+', "", value).strip()
     return sanitized or "track.mp3"
+
+
+def _model_json(model) -> str:
+    if hasattr(model, "model_dump_json"):
+        return model.model_dump_json(exclude_none=True, exclude_defaults=True)
+    if hasattr(model, "json"):
+        return model.json(exclude_none=True, exclude_defaults=True)
+    if hasattr(model, "model_dump"):
+        return json.dumps(model.model_dump(exclude_none=True, exclude_defaults=True))
+    return json.dumps(model.dict(exclude_none=True, exclude_defaults=True))
+
+
+def _sse(event: SearchStreamEvent) -> str:
+    return f"event: {event.event}\ndata: {_model_json(event)}\n\n"
+
+
+async def _search_event_stream(
+    selector: str,
+    query: str,
+    limit: int,
+    offset: int,
+    device_id: str | None,
+) -> AsyncIterator[str]:
+    async for event in manager.stream_search(selector, query, limit, offset, device_id):
+        yield _sse(event)
 
 
 @app.exception_handler(MusicServiceError)
@@ -94,7 +123,7 @@ async def unhandled_error_handler(_: Request, exc: Exception) -> JSONResponse:
     )
 
 
-@app.get("/health")
+@app.get("/health", include_in_schema=False)
 async def health() -> dict[str, str]:
     return {"status": "ok"}
 
@@ -104,7 +133,7 @@ async def sources() -> dict[str, object]:
     return {"sources": manager.list_sources()}
 
 
-@app.get("/search", response_model=SearchResponse)
+@app.get("/search")
 async def search(
     q: str = Query(..., min_length=1),
     source: str | None = Query(default=None),
@@ -112,19 +141,62 @@ async def search(
     limit: int = Query(default=10, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     device_id: str | None = Query(default=None),
-) -> SearchResponse:
+) -> StreamingResponse:
     selector = sources or source or "all"
-    return await manager.search(selector, q, limit, offset, device_id)
+    manager.prepare_search_request(selector, q, limit, offset)
+    return StreamingResponse(
+        _search_event_stream(selector, q, limit, offset, device_id),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
-@app.post("/stream", response_model=PreparedTrackResponse)
-async def stream(request: TrackSelectionRequest) -> PreparedTrackResponse:
-    return await manager.prepare_track(request.result_id)
+@app.post(
+    "/stream/{result_id}",
+    response_class=FileResponse,
+)
+async def stream(result_id: str) -> FileResponse:
+    return await _stream_result(result_id)
 
 
-@app.post("/download", response_model=PreparedTrackResponse)
-async def download(request: TrackSelectionRequest) -> PreparedTrackResponse:
-    return await manager.prepare_track(request.result_id)
+@app.get(
+    "/stream/{result_id}",
+    response_class=FileResponse,
+    include_in_schema=False,
+)
+async def stream_preview(result_id: str) -> FileResponse:
+    return await _stream_result(result_id)
+
+
+async def _stream_result(result_id: str) -> FileResponse:
+    record, _ = await manager.prepare_cached_track(result_id)
+    file_name = _safe_file_name(record.title, record.artist)
+    return FileResponse(
+        record.file_path,
+        media_type="audio/mpeg",
+        headers={"Content-Disposition": f'inline; filename="{file_name}"'},
+    )
+
+
+@app.post(
+    "/download/{result_id}",
+    response_class=FileResponse,
+)
+async def download(
+    result_id: str,
+    device_id: str | None = Query(default=None),
+) -> FileResponse:
+    record, _ = await manager.prepare_cached_track(
+        result_id,
+        device_id=device_id,
+        block_device_duplicate=True,
+    )
+    file_name = _safe_file_name(record.title, record.artist)
+    return FileResponse(
+        record.file_path,
+        media_type="audio/mpeg",
+        headers={"Content-Disposition": f'attachment; filename="{file_name}"'},
+    )
 
 
 @app.post("/device-library/sync", response_model=DeviceLibrarySyncResponse)
@@ -140,25 +212,3 @@ async def confirm_device_download(
     request: DeviceDownloadConfirmationRequest,
 ) -> DeviceDownloadConfirmationResponse:
     return manager.confirm_device_download(request)
-
-
-@app.get("/media/{cache_key}/stream")
-async def stream_cached_track(cache_key: str) -> FileResponse:
-    record = manager.get_cached_record(cache_key)
-    file_name = _safe_file_name(record.title, record.artist)
-    return FileResponse(
-        record.file_path,
-        media_type="audio/mpeg",
-        headers={"Content-Disposition": f'inline; filename="{file_name}"'},
-    )
-
-
-@app.get("/media/{cache_key}/download")
-async def download_cached_track(cache_key: str) -> FileResponse:
-    record = manager.get_cached_record(cache_key)
-    file_name = _safe_file_name(record.title, record.artist)
-    return FileResponse(
-        record.file_path,
-        media_type="audio/mpeg",
-        headers={"Content-Disposition": f'attachment; filename="{file_name}"'},
-    )

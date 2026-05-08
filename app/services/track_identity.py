@@ -4,7 +4,7 @@ import hashlib
 import re
 import unicodedata
 
-from app.domain.models import DeviceLibraryTrack, Track
+from app.domain.models import DeviceTrackRef, Track
 
 _NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
 
@@ -35,9 +35,7 @@ def hydrate_track_keys(track: Track) -> Track:
     return track
 
 
-def hydrate_device_track_keys(track: DeviceLibraryTrack) -> DeviceLibraryTrack:
-    track.base_track_key = track.base_track_key or build_base_track_key(track.title, track.artist)
-    track.track_key = track.track_key or build_track_key(track.title, track.artist, track.duration)
+def hydrate_device_track_keys(track: DeviceTrackRef) -> DeviceTrackRef:
     return track
 
 

@@ -32,19 +32,18 @@ class SearchResultStore:
 
         hydrated_tracks: list[Track] = []
         for track in tracks:
-            result_id = secrets.token_urlsafe(9)
-            track.result_id = result_id
-            record = SearchResultRecord(
-                result_id=result_id,
-                track=track,
-                created_at=now,
-                expires_at=now + timedelta(seconds=self.ttl_seconds),
-            )
-            payload["records"].append(_model_to_dict(record))
-            hydrated_tracks.append(track)
+            hydrated_tracks.append(self._append_track(payload, track, now))
 
         self._save(payload)
         return hydrated_tracks
+
+    def store_track(self, track: Track) -> Track:
+        payload = self._load()
+        now = datetime.now(timezone.utc)
+        self._cleanup_payload(payload, now)
+        hydrated_track = self._append_track(payload, track, now)
+        self._save(payload)
+        return hydrated_track
 
     def get_track(self, result_id: str) -> Track:
         payload = self._load()
@@ -68,6 +67,18 @@ class SearchResultStore:
         if changed:
             self._save(payload)
         raise SearchResultNotFoundError(result_id)
+
+    def _append_track(self, payload: dict, track: Track, now: datetime) -> Track:
+        result_id = secrets.token_urlsafe(9)
+        track.result_id = result_id
+        record = SearchResultRecord(
+            result_id=result_id,
+            track=track,
+            created_at=now,
+            expires_at=now + timedelta(seconds=self.ttl_seconds),
+        )
+        payload["records"].append(_model_to_dict(record))
+        return track
 
     def _cleanup_payload(self, payload: dict, now: datetime) -> bool:
         original_count = len(payload["records"])

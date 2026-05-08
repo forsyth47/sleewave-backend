@@ -6,7 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
-from mutagen.id3 import ID3, TIT2, TPE1
+import httpx
+from mutagen.id3 import APIC, ID3, TALB, TIT2, TPE1
 from mutagen.mp3 import MP3
 
 from app.domain.models import CacheRecord, Track
@@ -220,11 +221,42 @@ class MediaCacheService:
                 audio.add_tags()
             audio.tags.delall("TIT2")
             audio.tags.delall("TPE1")
+            audio.tags.delall("TALB")
+            audio.tags.delall("APIC")
             audio.tags.add(TIT2(encoding=3, text=track.title))
             audio.tags.add(TPE1(encoding=3, text=track.artist))
+            if track.album:
+                audio.tags.add(TALB(encoding=3, text=track.album))
+            cover_art = self._fetch_cover_art(track.cover_url)
+            if cover_art:
+                mime_type, image_data = cover_art
+                audio.tags.add(
+                    APIC(
+                        encoding=3,
+                        mime=mime_type,
+                        type=3,
+                        desc="Cover",
+                        data=image_data,
+                    )
+                )
             audio.save()
         except Exception as exc:
             logger.warning("Could not write metadata for %s: %s", file_path, exc)
+
+    def _fetch_cover_art(self, cover_url: Optional[str]) -> Optional[tuple[str, bytes]]:
+        if not cover_url:
+            return None
+        try:
+            with httpx.Client(follow_redirects=True, timeout=10.0) as client:
+                response = client.get(cover_url)
+                response.raise_for_status()
+            content_type = response.headers.get("content-type", "").split(";")[0].strip()
+            if not content_type.startswith("image/"):
+                content_type = "image/jpeg"
+            return content_type, response.content[:5 * 1024 * 1024]
+        except Exception as exc:
+            logger.warning("Could not fetch cover art for %s: %s", cover_url, exc)
+            return None
 
     def _load_index(self) -> dict:
         if not self.index_path.exists():

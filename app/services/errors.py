@@ -80,6 +80,20 @@ class CacheEntryNotFoundError(MusicServiceError):
         )
 
 
+class TrackAlreadyOnDeviceError(MusicServiceError):
+    def __init__(self, device_id: str, track_key: str | None, base_track_key: str | None) -> None:
+        super().__init__(
+            "This track is already saved on the device.",
+            code="track_already_on_device",
+            status_code=409,
+            details={
+                "device_id": device_id,
+                **({"track_key": track_key} if track_key else {}),
+                **({"base_track_key": base_track_key} if base_track_key else {}),
+            },
+        )
+
+
 class SearchResultNotFoundError(MusicServiceError):
     def __init__(self, result_id: str) -> None:
         super().__init__(

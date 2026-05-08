@@ -11,6 +11,17 @@ from app.interfaces.music_provider import IMusicProvider
 from app.providers.download_helpers import ensure_ffmpeg_available
 
 
+def _best_thumbnail(entry: dict) -> Optional[str]:
+    thumbnails = entry.get("thumbnails") or []
+    if thumbnails:
+        best = max(
+            thumbnails,
+            key=lambda item: (item.get("width") or 0) * (item.get("height") or 0),
+        )
+        return best.get("url")
+    return entry.get("thumbnail")
+
+
 class YouTubeProvider(IMusicProvider):
     def __init__(self) -> None:
         self.common_options = {
@@ -42,7 +53,7 @@ class YouTubeProvider(IMusicProvider):
                     artist=entry.get("uploader", "Unknown Artist"),
                     source="yt",
                     duration=int(entry.get("duration") or 0),
-                    cover_url=entry.get("thumbnail"),
+                    cover_url=_best_thumbnail(entry),
                 )
             )
         return results
