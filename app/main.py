@@ -19,6 +19,7 @@ from app.domain.models import (
     DeviceLibrarySyncRequest,
     DeviceLibrarySyncResponse,
     ErrorResponse,
+    SavedSongsResponse,
     SearchStreamEvent,
 )
 from app.services.errors import MusicServiceError
@@ -197,6 +198,11 @@ async def download(
         media_type="audio/mpeg",
         headers={"Content-Disposition": f'attachment; filename="{file_name}"'},
     )
+
+
+@app.get("/saved-songs", response_model=SavedSongsResponse)
+async def saved_songs() -> SavedSongsResponse:
+    return manager.list_saved_songs()
 
 
 @app.post("/device-library/sync", response_model=DeviceLibrarySyncResponse)

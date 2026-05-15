@@ -86,6 +86,49 @@ POST /download/QvQ0S4VixjP2?device_id=phone-01
 
 When `device_id` is provided, the backend checks that phone's library first. If the track is already on that phone, it returns a structured `409 track_already_on_device` error and does not send the file again.
 
+### `GET /saved-songs`
+
+Returns every song currently available in the backend download cache, newest recently accessed first.
+Each saved song is registered as a temporary search result, so the returned `result_id` works with the normal `/stream/{result_id}` and `/download/{result_id}` endpoints.
+
+```http
+GET /saved-songs
+```
+
+Response:
+
+```json
+{
+  "songs": [
+    {
+      "title": "One More Time",
+      "artist": "Daft Punk",
+      "duration": 320,
+      "cover_url": "https://...",
+      "album": "Discovery",
+      "result_id": "QvQ0S4VixjP2",
+      "track_key": "stable-exact-key",
+      "base_track_key": "stable-title-artist-key",
+      "availability": {
+        "in_server_cache": true,
+        "cache_key": "stable-exact-key",
+        "preferred_origin": "server"
+      }
+    }
+  ],
+  "count": 1
+}
+```
+
+Use the returned `result_id` exactly like a search result:
+
+```http
+POST /stream/QvQ0S4VixjP2
+POST /download/QvQ0S4VixjP2
+```
+
+Cached matches are also emitted first from `GET /search` before provider searches complete. If the cached matches fill the requested `limit`, the backend returns them without searching remote providers.
+
 ### `POST /device-library/sync`
 
 Replaces the known track list for a device. Server cache is retained so other phones can reuse already downloaded files.

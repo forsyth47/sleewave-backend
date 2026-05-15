@@ -14,6 +14,7 @@ from app.domain.models import (
     DeviceLibrarySyncRequest,
     DeviceLibrarySyncResponse,
     DeviceTrackRef,
+    SavedSongsResponse,
     SearchResponse,
     SearchStreamEvent,
     SearchTrackResult,
@@ -41,6 +42,7 @@ from app.services.search_result_store import SearchResultStore
 from app.services.track_identity import (
     hydrate_device_track_keys,
     hydrate_track_keys,
+    normalize_text,
     tracks_match,
 )
 
@@ -187,6 +189,32 @@ class MusicManager:
             emitted=0,
         )
 
+        for track in self._cached_tracks_for_query(cleaned_query):
+            if self._contains_duplicate(merged_tracks, track):
+                continue
+            self._annotate_availability([track], device_id)
+            merged_tracks.append(track)
+            seen += 1
+            if seen <= offset:
+                continue
+            if emitted >= limit:
+                continue
+            stored_track = self.search_results.store_track(track)
+            emitted += 1
+            yield SearchStreamEvent(
+                event="track",
+                source=track.source,
+                track=self._to_search_track_result(stored_track),
+                emitted=emitted,
+            )
+
+        if emitted >= limit:
+            yield SearchStreamEvent(
+                event="done",
+                emitted=emitted,
+            )
+            return
+
         async def fetch_source(source_id: str) -> tuple[str, list[Track], Optional[Exception]]:
             try:
                 return source_id, await self._search_source(source_id, cleaned_query, fetch_limit), None
@@ -303,6 +331,15 @@ class MusicManager:
             server_cache_retained=True,
         )
 
+    def list_saved_songs(self) -> SavedSongsResponse:
+        songs = [
+            self._to_search_track_result(
+                self.search_results.store_track(self._track_from_cache_record(record))
+            )
+            for record in self.cache.list_records()
+        ]
+        return SavedSongsResponse(songs=songs, count=len(songs))
+
     def get_cached_record(self, cache_key: str):
         self.cache.touch(cache_key)
         return self.cache.get_by_cache_key(cache_key)
@@ -388,6 +425,7 @@ class MusicManager:
         availability = TrackAvailability(
             in_server_cache=track.availability.in_server_cache,
             on_device=track.availability.on_device,
+            cache_key=track.availability.cache_key,
             preferred_origin=track.availability.preferred_origin,
         )
         return SearchTrackResult(
@@ -400,6 +438,42 @@ class MusicManager:
             track_key=track.track_key or "",
             base_track_key=track.base_track_key or "",
             availability=availability,
+        )
+
+    def _cached_tracks_for_query(self, query: str) -> list[Track]:
+        normalized_query = normalize_text(query)
+        if not normalized_query:
+            return []
+
+        tracks = []
+        for record in self.cache.list_records():
+            haystack = normalize_text(
+                " ".join(
+                    item
+                    for item in [record.title, record.artist, record.album]
+                    if item
+                )
+            )
+            if normalized_query in haystack:
+                tracks.append(self._track_from_cache_record(record))
+        return tracks
+
+    def _track_from_cache_record(self, record: CacheRecord) -> Track:
+        return Track(
+            id=record.track_id,
+            title=record.title,
+            artist=record.artist,
+            source=record.source,
+            duration=record.duration,
+            cover_url=record.cover_url,
+            album=record.album,
+            track_key=record.track_key,
+            base_track_key=record.base_track_key,
+            availability=TrackAvailability(
+                in_server_cache=True,
+                cache_key=record.cache_key,
+                preferred_origin="server",
+            ),
         )
 
     def _merge_track(self, current: Track, incoming: Track) -> None:

@@ -139,3 +139,8 @@ class DeviceDownloadConfirmationResponse(BaseModel):
     device_id: str
     registered: bool
     server_cache_retained: bool = True
+
+
+class SavedSongsResponse(BaseModel):
+    songs: list[SearchTrackResult]
+    count: int

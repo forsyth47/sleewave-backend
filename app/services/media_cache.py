@@ -131,6 +131,12 @@ class MediaCacheService:
                 break
         raise CacheEntryNotFoundError(cache_key)
 
+    def list_records(self) -> list[CacheRecord]:
+        self._clean_missing_files()
+        index = self._load_index()
+        records = [CacheRecord(**item) for item in index["records"]]
+        return sorted(records, key=lambda record: record.last_accessed_at, reverse=True)
+
     def delete(self, cache_key: str) -> bool:
         index = self._load_index()
         removed = False
