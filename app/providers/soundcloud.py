@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 from typing import Optional
 
@@ -9,6 +10,8 @@ from yt_dlp import YoutubeDL
 from app.domain.models import Track
 from app.interfaces.music_provider import IMusicProvider
 from app.providers.download_helpers import ensure_ffmpeg_available
+
+logger = logging.getLogger(__name__)
 
 
 def _high_res_artwork(url: Optional[str]) -> Optional[str]:
@@ -21,6 +24,32 @@ def _high_res_artwork(url: Optional[str]) -> Optional[str]:
     )
 
 
+class _YtDlpLogger:
+    def debug(self, message: str) -> None:
+        pass
+
+    def warning(self, message: str) -> None:
+        logger.debug("SoundCloud yt-dlp warning: %s", message)
+
+    def error(self, message: str) -> None:
+        logger.debug("SoundCloud yt-dlp error: %s", message)
+
+
+def _soundcloud_track_url(entry: dict) -> Optional[str]:
+    for key in ("webpage_url", "permalink_url", "original_url", "url"):
+        value = entry.get(key)
+        if isinstance(value, str) and value.startswith("https://soundcloud.com/"):
+            return value
+    return None
+
+
+def _duration_seconds(value) -> int:
+    try:
+        return int(float(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 class SoundCloudProvider(IMusicProvider):
     def __init__(self) -> None:
         self.common_options = {
@@ -31,6 +60,14 @@ class SoundCloudProvider(IMusicProvider):
             "nocheckcertificate": True,
             "ignoreerrors": True,
             "suppress_warnings": True,
+            "logger": _YtDlpLogger(),
+            "socket_timeout": 15,
+            "retries": 2,
+            "fragment_retries": 2,
+        }
+        self.search_options = {
+            **self.common_options,
+            "extract_flat": "in_playlist",
         }
 
     async def search(self, query: str, limit: int = 10, offset: int = 0) -> list[Track]:
@@ -38,22 +75,25 @@ class SoundCloudProvider(IMusicProvider):
         search_query = f"scsearch{limit + offset + 10}:{query}"
 
         def fetch_results():
-            with YoutubeDL(self.common_options) as ydl:
+            with YoutubeDL(self.search_options) as ydl:
                 return ydl.extract_info(search_query, download=False)
 
         payload = await loop.run_in_executor(None, fetch_results)
         entries = payload.get("entries", []) if payload else []
         results = []
         for entry in entries[offset:]:
-            if not entry or not entry.get("url"):
+            if not entry:
+                continue
+            track_url = _soundcloud_track_url(entry)
+            if not track_url:
                 continue
             results.append(
                 Track(
-                    id=entry.get("webpage_url") or entry.get("url"),
+                    id=track_url,
                     title=entry.get("title", "Unknown Title"),
-                    artist=entry.get("uploader", "Unknown Artist"),
+                    artist=entry.get("uploader") or entry.get("channel") or "Unknown Artist",
                     source="sc",
-                    duration=int(entry.get("duration") or 0),
+                    duration=_duration_seconds(entry.get("duration")),
                     cover_url=_high_res_artwork(entry.get("thumbnail")),
                 )
             )
@@ -78,6 +118,7 @@ class SoundCloudProvider(IMusicProvider):
 
         download_options = {
             **self.common_options,
+            "ignoreerrors": False,
             "outtmpl": output_template,
             "overwrites": True,
             "postprocessors": [
@@ -94,6 +135,8 @@ class SoundCloudProvider(IMusicProvider):
             ensure_ffmpeg_available()
             with YoutubeDL(download_options) as ydl:
                 ydl.download([track_id])
+            if not final_path.exists():
+                raise RuntimeError("SoundCloud download finished without creating an MP3 file.")
             return str(final_path)
 
         try:
