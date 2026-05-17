@@ -9,7 +9,7 @@ from ytmusicapi import YTMusic
 
 from app.domain.models import Track
 from app.interfaces.music_provider import IMusicProvider
-from app.providers.download_helpers import ensure_ffmpeg_available
+from app.providers.download_helpers import ensure_ffmpeg_available, ytdlp_auth_options
 
 
 def _high_res_thumbnail(url: Optional[str]) -> Optional[str]:
@@ -26,6 +26,7 @@ class YTMusicProvider(IMusicProvider):
             "quiet": True,
             "no_warnings": True,
             "nocheckcertificate": True,
+            **ytdlp_auth_options(),
         }
 
     async def search(self, query: str, limit: int = 10, offset: int = 0) -> list[Track]:

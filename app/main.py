@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from app.domain.models import (
     ApiError,
+    CacheClearResponse,
     DeviceDownloadConfirmationRequest,
     DeviceDownloadConfirmationResponse,
     DeviceLibrarySyncRequest,
@@ -21,6 +22,7 @@ from app.domain.models import (
     ErrorResponse,
     SavedSongsResponse,
     SearchStreamEvent,
+    TrackDeleteResponse,
 )
 from app.services.errors import MusicServiceError
 from app.services.music_manager import MusicManager
@@ -31,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="Sleewave Backend",
-    version="0.2.0",
+    version="0.3.0",
     description="Local music aggregation backend for search, streaming, caching, and device downloads.",
 )
 
@@ -152,20 +154,11 @@ async def search(
     )
 
 
-@app.post(
+@app.get(
     "/stream/{result_id}",
     response_class=FileResponse,
 )
 async def stream(result_id: str) -> FileResponse:
-    return await _stream_result(result_id)
-
-
-@app.get(
-    "/stream/{result_id}",
-    response_class=FileResponse,
-    include_in_schema=False,
-)
-async def stream_preview(result_id: str) -> FileResponse:
     return await _stream_result(result_id)
 
 
@@ -179,7 +172,7 @@ async def _stream_result(result_id: str) -> FileResponse:
     )
 
 
-@app.post(
+@app.get(
     "/download/{result_id}",
     response_class=FileResponse,
 )
@@ -187,6 +180,10 @@ async def download(
     result_id: str,
     device_id: str | None = Query(default=None),
 ) -> FileResponse:
+    return await _download_result(result_id, device_id)
+
+
+async def _download_result(result_id: str, device_id: str | None) -> FileResponse:
     record, _ = await manager.prepare_cached_track(
         result_id,
         device_id=device_id,
@@ -201,8 +198,26 @@ async def download(
 
 
 @app.get("/saved-songs", response_model=SavedSongsResponse)
-async def saved_songs() -> SavedSongsResponse:
-    return manager.list_saved_songs()
+async def saved_songs(
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> SavedSongsResponse:
+    return manager.list_saved_songs(limit=limit, offset=offset)
+
+
+@app.delete("/tracks/{result_id}", response_model=TrackDeleteResponse)
+async def delete_track(result_id: str) -> TrackDeleteResponse:
+    return manager.delete_track(result_id)
+
+
+@app.delete("/cache", response_model=CacheClearResponse)
+async def clear_cache() -> CacheClearResponse:
+    return manager.clear_cache()
+
+
+@app.delete("/server-temp", response_model=CacheClearResponse)
+async def clear_server_temp_storage() -> CacheClearResponse:
+    return manager.clear_server_temp_storage()
 
 
 @app.post("/device-library/sync", response_model=DeviceLibrarySyncResponse)

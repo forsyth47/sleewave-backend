@@ -8,7 +8,7 @@ from yt_dlp import YoutubeDL
 
 from app.domain.models import Track
 from app.interfaces.music_provider import IMusicProvider
-from app.providers.download_helpers import ensure_ffmpeg_available
+from app.providers.download_helpers import ensure_ffmpeg_available, ytdlp_auth_options
 
 
 def _best_thumbnail(entry: dict) -> Optional[str]:
@@ -30,6 +30,7 @@ class YouTubeProvider(IMusicProvider):
             "quiet": True,
             "no_warnings": True,
             "default_search": "ytsearch",
+            **ytdlp_auth_options(),
         }
 
     async def search(self, query: str, limit: int = 10, offset: int = 0) -> list[Track]:

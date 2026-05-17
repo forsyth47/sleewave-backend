@@ -9,6 +9,7 @@ from typing import Optional
 
 from app.domain.models import (
     CacheRecord,
+    CacheClearResponse,
     DeviceDownloadConfirmationRequest,
     DeviceDownloadConfirmationResponse,
     DeviceLibrarySyncRequest,
@@ -23,11 +24,10 @@ from app.domain.models import (
     Track,
     TrackAvailability,
     TrackSourceRef,
+    TrackDeleteResponse,
 )
 from app.interfaces.music_provider import IMusicProvider
 from app.providers.soundcloud import SoundCloudProvider
-from app.providers.spotify import SpotifyProvider
-from app.providers.vk import VKProvider
 from app.providers.youtube import YouTubeProvider
 from app.providers.ytmusic import YTMusicProvider
 from app.services.device_library import DeviceLibraryService
@@ -35,10 +35,11 @@ from app.services.errors import (
     BadRequestError,
     ProviderNotFoundError,
     ProviderUnavailableError,
+    SearchResultNotFoundError,
     TrackAlreadyOnDeviceError,
 )
 from app.services.media_cache import MediaCacheService
-from app.services.search_result_store import SearchResultStore
+from app.services.song_catalog import SongCatalog
 from app.services.track_identity import (
     hydrate_device_track_keys,
     hydrate_track_keys,
@@ -68,10 +69,7 @@ class MusicManager:
             max_size_bytes=max_cache_mb * 1024 * 1024,
         )
         self.device_library = DeviceLibraryService(cache_root / "device_library.json")
-        self.search_results = SearchResultStore(
-            cache_root / "search_results.json",
-            ttl_seconds=int(os.getenv("SLEEWAVE_SEARCH_RESULT_TTL_SECONDS", "1800")),
-        )
+        self.song_catalog = SongCatalog(cache_root / "song_catalog.json")
         self._providers: dict[str, ProviderEntry] = {
             "ytm": ProviderEntry(
                 info=SourceInfo(id="ytm", name="YouTube Music"),
@@ -95,7 +93,7 @@ class MusicManager:
                     available=False,
                     message="Spotify integration has not been implemented yet.",
                 ),
-                provider=SpotifyProvider(),
+                provider=None,
                 priority=40,
             ),
             "vk": ProviderEntry(
@@ -105,7 +103,7 @@ class MusicManager:
                     available=False,
                     message="VK integration has not been implemented yet.",
                 ),
-                provider=VKProvider(),
+                provider=None,
                 priority=50,
             ),
         }
@@ -156,7 +154,7 @@ class MusicManager:
         self._annotate_availability(deduplicated, device_id)
         ordered = sorted(deduplicated, key=self._search_sort_key)
         paged_results = ordered[offset : offset + limit]
-        self.search_results.store_tracks(paged_results)
+        paged_results = self.song_catalog.upsert_tracks(paged_results)
         return SearchResponse(
             query=cleaned_query,
             sources=source_ids,
@@ -199,7 +197,7 @@ class MusicManager:
                 continue
             if emitted >= limit:
                 continue
-            stored_track = self.search_results.store_track(track)
+            stored_track = self.song_catalog.upsert_track(track)
             emitted += 1
             yield SearchStreamEvent(
                 event="track",
@@ -253,7 +251,7 @@ class MusicManager:
                         continue
                     if emitted >= limit:
                         continue
-                    stored_track = self.search_results.store_track(hydrated)
+                    stored_track = self.song_catalog.upsert_track(hydrated)
                     emitted += 1
                     yield SearchStreamEvent(
                         event="track",
@@ -300,9 +298,14 @@ class MusicManager:
         device_id: Optional[str] = None,
         block_device_duplicate: bool = False,
     ) -> tuple[CacheRecord, bool]:
-        track = hydrate_track_keys(self.search_results.get_track(result_id))
+        try:
+            track = hydrate_track_keys(self.song_catalog.get_track(result_id))
+        except SearchResultNotFoundError:
+            record = self.cache.get_by_cache_key(result_id)
+            track = self.song_catalog.upsert_track(self._track_from_cache_record(record))
+
         if block_device_duplicate and device_id and self.device_library.has_track(device_id, track):
-            raise TrackAlreadyOnDeviceError(device_id, track.track_key, track.base_track_key)
+            raise TrackAlreadyOnDeviceError(device_id, track.result_id or track.track_key)
 
         async def downloader(target_path: str) -> Optional[str]:
             provider = self._get_download_provider(track.source)
@@ -311,7 +314,8 @@ class MusicManager:
         return await self.cache.ensure_cached(track, downloader)
 
     def sync_device_library(self, request: DeviceLibrarySyncRequest) -> DeviceLibrarySyncResponse:
-        track_count = self.device_library.replace_tracks(request)
+        tracks = [self._device_track_from_result_id(track.result_id) for track in request.tracks]
+        track_count = self.device_library.replace_tracks(request.device_id, tracks)
         return DeviceLibrarySyncResponse(
             device_id=request.device_id,
             track_count=track_count,
@@ -322,7 +326,7 @@ class MusicManager:
         self,
         request: DeviceDownloadConfirmationRequest,
     ) -> DeviceDownloadConfirmationResponse:
-        request_track = self._device_track_from_confirmation(request)
+        request_track = self._device_track_from_result_id(request.result_id)
         hydrated_request_track = hydrate_device_track_keys(request_track)
         registered = self.device_library.add_track(request.device_id, hydrated_request_track)
         return DeviceDownloadConfirmationResponse(
@@ -331,14 +335,55 @@ class MusicManager:
             server_cache_retained=True,
         )
 
-    def list_saved_songs(self) -> SavedSongsResponse:
+    def list_saved_songs(self, *, limit: int = 50, offset: int = 0) -> SavedSongsResponse:
+        self._validate_pagination(limit, offset, max_limit=200)
+        records = self.cache.list_records()
+        paged_records = records[offset : offset + limit]
+        tracks = self.song_catalog.upsert_tracks(
+            [self._track_from_cache_record(record) for record in paged_records]
+        )
         songs = [
-            self._to_search_track_result(
-                self.search_results.store_track(self._track_from_cache_record(record))
-            )
-            for record in self.cache.list_records()
+            self._to_search_track_result(track)
+            for track in tracks
         ]
-        return SavedSongsResponse(songs=songs, count=len(songs))
+        total = len(records)
+        return SavedSongsResponse(
+            songs=songs,
+            count=len(songs),
+            total=total,
+            limit=limit,
+            offset=offset,
+            has_more=offset + len(songs) < total,
+        )
+
+    def delete_track(self, result_id: str) -> TrackDeleteResponse:
+        cache_deleted = False
+        try:
+            track = self.song_catalog.get_track(result_id)
+            cache_deleted = self.cache.delete_by_track(track)
+            self.song_catalog.delete_track(result_id)
+        except SearchResultNotFoundError:
+            cache_deleted = self.cache.delete(result_id)
+            if not cache_deleted:
+                raise
+
+        return TrackDeleteResponse(
+            result_id=result_id,
+            cache_deleted=cache_deleted,
+        )
+
+    def clear_cache(self) -> CacheClearResponse:
+        return CacheClearResponse(deleted_count=self.cache.clear())
+
+    def clear_server_temp_storage(self) -> CacheClearResponse:
+        deleted_count = self.cache.clear()
+        self.song_catalog.clear()
+        self.device_library.clear()
+        return CacheClearResponse(
+            deleted_count=deleted_count,
+            track_catalog_cleared=True,
+            device_library_cleared=True,
+        )
 
     def get_cached_record(self, cache_key: str):
         self.cache.touch(cache_key)
@@ -380,6 +425,12 @@ class MusicManager:
             resolved.append(source_id)
             seen.add(source_id)
         return resolved
+
+    def _validate_pagination(self, limit: int, offset: int, *, max_limit: int) -> None:
+        if limit < 1 or limit > max_limit:
+            raise BadRequestError(f"The limit must be between 1 and {max_limit}.")
+        if offset < 0:
+            raise BadRequestError("The offset cannot be negative.")
 
     def _get_download_provider(self, source_id: str) -> IMusicProvider:
         entry = self._providers.get(source_id)
@@ -435,8 +486,6 @@ class MusicManager:
             cover_url=track.cover_url,
             album=track.album,
             result_id=track.result_id or "",
-            track_key=track.track_key or "",
-            base_track_key=track.base_track_key or "",
             availability=availability,
         )
 
@@ -520,8 +569,9 @@ class MusicManager:
         current.alternate_sources = deduped_refs
 
     def _annotate_availability(self, tracks: list[Track], device_id: Optional[str]) -> None:
-        for track in tracks:
-            cache_record = self.cache.find_by_track(track)
+        cache_records = self.cache.find_by_tracks(tracks)
+        for index, track in enumerate(tracks):
+            cache_record = cache_records.get(index)
             on_device = self.device_library.has_track(device_id, track) if device_id else False
             preferred_origin = "remote"
             cache_key = None
@@ -560,23 +610,15 @@ class MusicManager:
         entry = self._providers.get(source_id)
         return entry.priority if entry else 1000
 
-    def _device_track_from_confirmation(
-        self,
-        request: DeviceDownloadConfirmationRequest,
-    ) -> DeviceTrackRef:
-        if request.track_key or request.base_track_key:
+    def _device_track_from_result_id(self, result_id: str) -> DeviceTrackRef:
+        try:
+            track = hydrate_track_keys(self.song_catalog.get_track(result_id))
             return DeviceTrackRef(
-                track_key=request.track_key,
-                base_track_key=request.base_track_key,
-            )
-
-        if request.result_id:
-            track = hydrate_track_keys(self.search_results.get_track(request.result_id))
-            return DeviceTrackRef(
-                track_key=track.track_key,
+                track_key=track.track_key or result_id,
                 base_track_key=track.base_track_key,
             )
-
-        raise BadRequestError(
-            "Provide track_key/base_track_key or result_id to confirm a download."
-        )
+        except SearchResultNotFoundError:
+            return DeviceTrackRef(
+                track_key=result_id,
+                base_track_key=None,
+            )

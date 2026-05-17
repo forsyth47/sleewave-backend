@@ -106,19 +106,33 @@ class MediaCacheService:
 
     def find_by_track(self, track: Track) -> Optional[CacheRecord]:
         hydrated_track = hydrate_track_keys(track)
-        index = self._load_index()
         exact_match = None
         base_match = None
-        for item in index["records"]:
-            record = CacheRecord(**item)
-            if not Path(record.file_path).exists():
-                continue
-            if item.get("track_key") == hydrated_track.track_key:
+        for record in self._existing_records():
+            if record.track_key == hydrated_track.track_key:
                 exact_match = record
                 break
-            if item.get("base_track_key") == hydrated_track.base_track_key and base_match is None:
+            if record.base_track_key == hydrated_track.base_track_key and base_match is None:
                 base_match = record
         return exact_match or base_match
+
+    def find_by_tracks(self, tracks: list[Track]) -> dict[int, CacheRecord]:
+        records = self._existing_records()
+        exact_records = {record.track_key: record for record in records if record.track_key}
+        base_records = {}
+        for record in records:
+            if record.base_track_key and record.base_track_key not in base_records:
+                base_records[record.base_track_key] = record
+
+        matches = {}
+        for index, track in enumerate(tracks):
+            hydrated_track = hydrate_track_keys(track)
+            record = exact_records.get(hydrated_track.track_key or "")
+            if not record:
+                record = base_records.get(hydrated_track.base_track_key or "")
+            if record:
+                matches[index] = record
+        return matches
 
     def get_by_cache_key(self, cache_key: str) -> CacheRecord:
         index = self._load_index()
@@ -133,8 +147,7 @@ class MediaCacheService:
 
     def list_records(self) -> list[CacheRecord]:
         self._clean_missing_files()
-        index = self._load_index()
-        records = [CacheRecord(**item) for item in index["records"]]
+        records = self._existing_records()
         return sorted(records, key=lambda record: record.last_accessed_at, reverse=True)
 
     def delete(self, cache_key: str) -> bool:
@@ -180,6 +193,29 @@ class MediaCacheService:
             self._save_index(index)
         return removed_count
 
+    def clear(self) -> int:
+        index = self._load_index()
+        removed_cache_keys = set()
+        removed_count = 0
+
+        for item in index["records"]:
+            cache_key = item.get("cache_key")
+            file_path = Path(item["file_path"])
+            if file_path.exists():
+                file_path.unlink()
+                removed_count += 1
+            if cache_key:
+                removed_cache_keys.add(cache_key)
+
+        for file_path in self.files_dir.glob("*.mp3"):
+            if file_path.stem in removed_cache_keys:
+                continue
+            file_path.unlink()
+            removed_count += 1
+
+        self._save_index({"records": []})
+        return removed_count
+
     def touch(self, cache_key: str) -> None:
         index = self._load_index()
         now = datetime.now(timezone.utc).isoformat()
@@ -219,6 +255,14 @@ class MediaCacheService:
         if len(cleaned_records) != len(index["records"]):
             index["records"] = cleaned_records
             self._save_index(index)
+
+    def _existing_records(self) -> list[CacheRecord]:
+        index = self._load_index()
+        return [
+            CacheRecord(**item)
+            for item in index["records"]
+            if Path(item.get("file_path", "")).exists()
+        ]
 
     def _write_basic_metadata(self, file_path: Path, track: Track) -> None:
         try:

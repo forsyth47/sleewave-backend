@@ -73,8 +73,6 @@ class SearchTrackResult(BaseModel):
     cover_url: Optional[str] = None
     album: Optional[str] = None
     result_id: str
-    track_key: str
-    base_track_key: str
     availability: TrackAvailability
 
 
@@ -105,11 +103,20 @@ class CacheRecord(BaseModel):
     last_accessed_at: datetime
 
 
-class SearchResultRecord(BaseModel):
+class SongCatalogRecord(BaseModel):
     result_id: str
-    track: Track
+    source: str
+    track_id: str
+    title: str
+    artist: str
+    duration: int = 0
+    cover_url: Optional[str] = None
+    album: Optional[str] = None
+    track_key: str
+    base_track_key: str
+    alternate_sources: list[TrackSourceRef] = Field(default_factory=list)
     created_at: datetime
-    expires_at: datetime
+    updated_at: datetime
 
 
 class DeviceTrackRef(BaseModel):
@@ -117,9 +124,13 @@ class DeviceTrackRef(BaseModel):
     base_track_key: Optional[str] = None
 
 
+class DeviceLibraryTrack(BaseModel):
+    result_id: str
+
+
 class DeviceLibrarySyncRequest(BaseModel):
     device_id: str
-    tracks: list[DeviceTrackRef]
+    tracks: list[DeviceLibraryTrack]
 
 
 class DeviceLibrarySyncResponse(BaseModel):
@@ -130,9 +141,7 @@ class DeviceLibrarySyncResponse(BaseModel):
 
 class DeviceDownloadConfirmationRequest(BaseModel):
     device_id: str
-    result_id: Optional[str] = None
-    track_key: Optional[str] = None
-    base_track_key: Optional[str] = None
+    result_id: str
 
 
 class DeviceDownloadConfirmationResponse(BaseModel):
@@ -144,3 +153,18 @@ class DeviceDownloadConfirmationResponse(BaseModel):
 class SavedSongsResponse(BaseModel):
     songs: list[SearchTrackResult]
     count: int
+    total: int = 0
+    limit: int = 0
+    offset: int = 0
+    has_more: bool = False
+
+
+class TrackDeleteResponse(BaseModel):
+    result_id: str
+    cache_deleted: bool
+
+
+class CacheClearResponse(BaseModel):
+    deleted_count: int
+    track_catalog_cleared: bool = False
+    device_library_cleared: bool = False

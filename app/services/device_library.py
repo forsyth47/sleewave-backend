@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from app.domain.models import DeviceLibrarySyncRequest, DeviceTrackRef, Track
+from app.domain.models import DeviceTrackRef, Track
 from app.services.track_identity import hydrate_device_track_keys, hydrate_track_keys
 
 
@@ -18,13 +18,13 @@ class DeviceLibraryService:
         self.storage_path = storage_path
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
 
-    def replace_tracks(self, request: DeviceLibrarySyncRequest) -> int:
+    def replace_tracks(self, device_id: str, tracks: list[DeviceTrackRef]) -> int:
         payload = self._load()
-        payload["devices"][request.device_id] = {
-            "tracks": [_model_to_dict(hydrate_device_track_keys(track)) for track in request.tracks],
+        payload["devices"][device_id] = {
+            "tracks": [_model_to_dict(hydrate_device_track_keys(track)) for track in tracks],
         }
         self._save(payload)
-        return len(request.tracks)
+        return len(tracks)
 
     def has_track(self, device_id: str, track: Track) -> bool:
         device_tracks = self._load()["devices"].get(device_id, {}).get("tracks", [])
@@ -59,6 +59,9 @@ class DeviceLibraryService:
         exact_keys = {item["track_key"] for item in device_tracks if item.get("track_key")}
         base_keys = {item["base_track_key"] for item in device_tracks if item.get("base_track_key")}
         return exact_keys, base_keys
+
+    def clear(self) -> None:
+        self._save({"devices": {}})
 
     def _load(self) -> dict:
         if not self.storage_path.exists():

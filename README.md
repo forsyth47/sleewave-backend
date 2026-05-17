@@ -55,7 +55,7 @@ event: start
 data: {"event":"start","query":"daft punk","sources":["ytm","yt","sc"],"emitted":0}
 
 event: track
-data: {"event":"track","source":"ytm","track":{"title":"One More Time","artist":"Daft Punk","duration":320,"cover_url":"https://...","album":"Discovery","result_id":"QvQ0S4VixjP2","track_key":"stable-exact-key","base_track_key":"stable-title-artist-key","availability":{"in_server_cache":true,"preferred_origin":"server"}},"emitted":1}
+data: {"event":"track","source":"ytm","track":{"title":"One More Time","artist":"Daft Punk","duration":320,"cover_url":"https://...","album":"Discovery","result_id":"stable-exact-key","availability":{"in_server_cache":true,"preferred_origin":"server"}},"emitted":1}
 
 event: warning
 data: {"event":"warning","source":"sc","warning":{...},"emitted":4}
@@ -64,24 +64,22 @@ event: done
 data: {"event":"done","emitted":10}
 ```
 
-Use `result_id` immediately for stream/download actions. Store `track_key` and `base_track_key` as stable identity values for duplicate detection.
+Use `result_id` for stream, download, delete, and device-library actions. It is stable.
 
-### `POST /stream/{result_id}`
+### `GET /stream/{result_id}`
 
-Downloads the selected result into the server temp cache if needed, then returns the cached MP3 inline for playback. If the server already has a matching `track_key` or `base_track_key`, it reuses the cached file instead of downloading from the provider again.
+Downloads the selected result into the server temp cache if needed, then returns the cached MP3 inline for playback.
 
 ```http
-POST /stream/QvQ0S4VixjP2
+GET /stream/stable-exact-key
 ```
 
-`result_id` is short-lived. If it expires, search again and use the fresh `result_id`.
-
-### `POST /download/{result_id}`
+### `GET /download/{result_id}`
 
 Downloads the selected result into the server temp cache if needed, then returns the cached MP3 as an attachment for the device to save.
 
 ```http
-POST /download/QvQ0S4VixjP2?device_id=phone-01
+GET /download/stable-exact-key?device_id=phone-01
 ```
 
 When `device_id` is provided, the backend checks that phone's library first. If the track is already on that phone, it returns a structured `409 track_already_on_device` error and does not send the file again.
@@ -89,10 +87,10 @@ When `device_id` is provided, the backend checks that phone's library first. If 
 ### `GET /saved-songs`
 
 Returns every song currently available in the backend download cache, newest recently accessed first.
-Each saved song is registered as a temporary search result, so the returned `result_id` works with the normal `/stream/{result_id}` and `/download/{result_id}` endpoints.
+Each saved song is returned with its permanent `result_id`, which works with the normal `/stream/{result_id}` and `/download/{result_id}` endpoints.
 
 ```http
-GET /saved-songs
+GET /saved-songs?limit=50&offset=0
 ```
 
 Response:
@@ -106,9 +104,7 @@ Response:
       "duration": 320,
       "cover_url": "https://...",
       "album": "Discovery",
-      "result_id": "QvQ0S4VixjP2",
-      "track_key": "stable-exact-key",
-      "base_track_key": "stable-title-artist-key",
+      "result_id": "stable-exact-key",
       "availability": {
         "in_server_cache": true,
         "cache_key": "stable-exact-key",
@@ -116,18 +112,42 @@ Response:
       }
     }
   ],
-  "count": 1
+  "count": 1,
+  "total": 1,
+  "limit": 50,
+  "offset": 0,
+  "has_more": false
 }
 ```
 
 Use the returned `result_id` exactly like a search result:
 
 ```http
-POST /stream/QvQ0S4VixjP2
-POST /download/QvQ0S4VixjP2
+GET /stream/stable-exact-key
+GET /download/stable-exact-key
 ```
 
 Cached matches are also emitted first from `GET /search` before provider searches complete. If the cached matches fill the requested `limit`, the backend returns them without searching remote providers.
+
+### Delete cached data
+
+Delete one cached/cataloged track:
+
+```http
+DELETE /tracks/stable-exact-key
+```
+
+Clear cached MP3 files while keeping the track catalog and device library:
+
+```http
+DELETE /cache
+```
+
+Clear all backend temp state, including cached MP3s, track catalog, and device library:
+
+```http
+DELETE /server-temp
+```
 
 ### `POST /device-library/sync`
 
@@ -140,8 +160,7 @@ Request body:
   "device_id": "phone-01",
   "tracks": [
     {
-      "track_key": "stable-exact-key",
-      "base_track_key": "stable-title-artist-key"
+      "result_id": "stable-exact-key"
     }
   ]
 }
@@ -151,22 +170,10 @@ Request body:
 
 Call this after the Flutter app has finished saving a downloaded track. The backend adds the track to the device library and keeps the server cache available for reuse.
 
-Prefer stable keys from the search result:
-
 ```json
 {
   "device_id": "phone-01",
-  "track_key": "stable-exact-key",
-  "base_track_key": "stable-title-artist-key"
-}
-```
-
-`result_id` is still accepted as a fallback while the search token is valid.
-
-```json
-{
-  "device_id": "phone-01",
-  "result_id": "QvQ0S4VixjP2"
+  "result_id": "stable-exact-key"
 }
 ```
 
@@ -197,7 +204,12 @@ Environment variables:
 
 - `SLEEWAVE_CACHE_DIR` - optional custom cache directory
 - `SLEEWAVE_CACHE_MAX_MB` - maximum cache size in megabytes, default `1024`
-- `SLEEWAVE_SEARCH_RESULT_TTL_SECONDS` - how long a search `result_id` stays valid, default `1800`
+- `SLEEWAVE_YTDLP_COOKIES` - optional raw Netscape cookies.txt content for `yt-dlp`
+- `SLEEWAVE_YTDLP_COOKIES_BASE64` - optional base64-encoded Netscape cookies.txt content for `yt-dlp`
+- `SLEEWAVE_YTDLP_COOKIES_FILE` - optional path to a Netscape cookies.txt file for `yt-dlp`
+- `SLEEWAVE_YTDLP_COOKIES_FROM_BROWSER` - optional browser cookie source such as `chrome`, `firefox:default`, or `chrome:Profile 1`
+
+Cookie env precedence is `SLEEWAVE_YTDLP_COOKIES_FILE`, then `SLEEWAVE_YTDLP_COOKIES_BASE64`, then `SLEEWAVE_YTDLP_COOKIES`, then `SLEEWAVE_YTDLP_COOKIES_FROM_BROWSER`. The backend loads `app/.env` on startup.
 
 ## Run locally
 

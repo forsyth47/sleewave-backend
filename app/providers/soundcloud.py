@@ -9,7 +9,7 @@ from yt_dlp import YoutubeDL
 
 from app.domain.models import Track
 from app.interfaces.music_provider import IMusicProvider
-from app.providers.download_helpers import ensure_ffmpeg_available
+from app.providers.download_helpers import ensure_ffmpeg_available, ytdlp_auth_options
 
 logger = logging.getLogger(__name__)
 
@@ -18,8 +18,11 @@ def _high_res_artwork(url: Optional[str]) -> Optional[str]:
     if not url:
         return None
     return (
-        url.replace("large.jpg", "t500x500.jpg")
+        url.replace("-large.jpg", "-t500x500.jpg")
+        .replace("large.jpg", "t500x500.jpg")
+        .replace("-t300x300.jpg", "-t500x500.jpg")
         .replace("t300x300.jpg", "t500x500.jpg")
+        .replace("-crop.jpg", "-t500x500.jpg")
         .replace("crop.jpg", "t500x500.jpg")
     )
 
@@ -50,6 +53,23 @@ def _duration_seconds(value) -> int:
         return 0
 
 
+def _best_artwork(entry: dict) -> Optional[str]:
+    thumbnails = entry.get("thumbnails") or []
+    if thumbnails:
+        best = max(
+            thumbnails,
+            key=lambda item: (item.get("width") or 0) * (item.get("height") or 0),
+        )
+        if best.get("url"):
+            return _high_res_artwork(best["url"])
+
+    for key in ("thumbnail", "artwork_url", "thumbnail_url", "avatar_url"):
+        value = entry.get(key)
+        if value:
+            return _high_res_artwork(value)
+    return None
+
+
 class SoundCloudProvider(IMusicProvider):
     def __init__(self) -> None:
         self.common_options = {
@@ -64,6 +84,7 @@ class SoundCloudProvider(IMusicProvider):
             "socket_timeout": 15,
             "retries": 2,
             "fragment_retries": 2,
+            **ytdlp_auth_options(),
         }
         self.search_options = {
             **self.common_options,
@@ -94,7 +115,8 @@ class SoundCloudProvider(IMusicProvider):
                     artist=entry.get("uploader") or entry.get("channel") or "Unknown Artist",
                     source="sc",
                     duration=_duration_seconds(entry.get("duration")),
-                    cover_url=_high_res_artwork(entry.get("thumbnail")),
+                    cover_url=_best_artwork(entry),
+                    album=entry.get("album"),
                 )
             )
             if len(results) >= limit:

@@ -15,24 +15,23 @@ http://127.0.0.1:8000
 `result_id` is the main handle your player should use for playback and downloads.
 
 - It is returned by `/search` and `/saved-songs`.
-- It is temporary and expires after `SLEEWAVE_SEARCH_RESULT_TTL_SECONDS`, default `1800` seconds.
+- It is stable and permanent for a track.
 - Use it with:
 
 ```http
-POST /stream/{result_id}
-POST /download/{result_id}
+GET /stream/{result_id}
+GET /download/{result_id}
 ```
 
-If a `result_id` expires, the backend returns `404 search_result_not_found`. Search again or call `/saved-songs` again to get a fresh `result_id`.
+If a `result_id` is unknown, the backend returns `404 search_result_not_found`. Search again or call `/saved-songs` to register the track in the backend catalog.
 
-### Track Keys
+### Internal Track Keys
 
-`track_key` and `base_track_key` are stable identity keys for duplicate detection.
+The backend still keeps `track_key` and `base_track_key` internally for duplicate detection.
 
 - `track_key` includes title, artist, and approximate duration.
 - `base_track_key` includes title and artist only.
-- Store these on the client after search/download.
-- Send them to `/device-library/sync` or `/device-library/confirm-download` so the backend can mark songs as already on the device.
+- `result_id` is the only public ID the player needs to store or send.
 
 ### Server Cache
 
@@ -40,7 +39,7 @@ When `/stream/{result_id}` or `/download/{result_id}` is called, the backend pre
 
 - If the same song is already cached, it reuses the existing MP3.
 - Cached songs appear first in search results when they match the query.
-- `/saved-songs` lists every cached song and gives each one a fresh `result_id`.
+- `/saved-songs` lists every cached song with its permanent `result_id`.
 - Cache is temporary and can be evicted by size limit.
 
 ### Device Library
@@ -59,7 +58,7 @@ Use it to tell the backend which tracks are already saved locally on the phone, 
 4. Use `track.result_id` to play:
 
 ```http
-POST /stream/{result_id}
+GET /stream/{result_id}
 ```
 
 The response is `audio/mpeg`, inline.
@@ -71,7 +70,7 @@ The response is `audio/mpeg`, inline.
 3. Call:
 
 ```http
-POST /download/{result_id}?device_id=phone-01
+GET /download/{result_id}?device_id=phone-01
 ```
 
 4. Save the MP3 on the device.
@@ -82,8 +81,7 @@ Recommended confirmation payload:
 ```json
 {
   "device_id": "phone-01",
-  "track_key": "stable-exact-key",
-  "base_track_key": "stable-title-artist-key"
+  "result_id": "stable-exact-key"
 }
 ```
 
@@ -95,11 +93,11 @@ Call:
 GET /saved-songs
 ```
 
-The response contains cached songs with fresh `result_id`s. Use those IDs exactly like search results:
+The response contains cached songs with permanent `result_id`s. Use those IDs exactly like search results:
 
 ```http
-POST /stream/{result_id}
-POST /download/{result_id}
+GET /stream/{result_id}
+GET /download/{result_id}
 ```
 
 ### Search With Instant Cached Results
@@ -182,7 +180,7 @@ event: start
 data: {"event":"start","query":"daft punk","sources":["ytm","yt","sc"],"emitted":0}
 
 event: track
-data: {"event":"track","source":"ytm","track":{"title":"One More Time","artist":"Daft Punk","duration":320,"cover_url":"https://...","album":"Discovery","result_id":"QvQ0S4VixjP2","track_key":"stable-exact-key","base_track_key":"stable-title-artist-key","availability":{"in_server_cache":true,"cache_key":"stable-exact-key","preferred_origin":"server"}},"emitted":1}
+data: {"event":"track","source":"ytm","track":{"title":"One More Time","artist":"Daft Punk","duration":320,"cover_url":"https://...","album":"Discovery","result_id":"stable-exact-key","availability":{"in_server_cache":true,"cache_key":"stable-exact-key","preferred_origin":"server"}},"emitted":1}
 
 event: warning
 data: {"event":"warning","source":"sc","warning":{"source":"sc","message":"Search failed for source 'sc' and it was skipped."},"emitted":4}
@@ -200,9 +198,7 @@ Track response fields:
   "duration": 320,
   "cover_url": "https://...",
   "album": "Discovery",
-  "result_id": "QvQ0S4VixjP2",
-  "track_key": "stable-exact-key",
-  "base_track_key": "stable-title-artist-key",
+  "result_id": "stable-exact-key",
   "availability": {
     "in_server_cache": true,
     "on_device": false,
@@ -226,12 +222,12 @@ Client handling:
 - Treat `warning` events as non-fatal if searching multiple sources.
 - Treat a provider error as fatal only when searching one source and the request fails.
 
-### `POST /stream/{result_id}`
+### `GET /stream/{result_id}`
 
 Prepares the selected track in the server cache if needed, then streams the MP3 inline.
 
 ```http
-POST /stream/QvQ0S4VixjP2
+GET /stream/stable-exact-key
 ```
 
 Response:
@@ -245,19 +241,15 @@ Important:
 
 - This may take time on first play because the backend downloads and converts the source audio.
 - Later plays are fast because they reuse the cache.
-- If the result expired, search again or call `/saved-songs` again.
+- If the track ID is unknown, search again or call `/saved-songs` again.
 
-### `GET /stream/{result_id}`
-
-Same behavior as `POST /stream/{result_id}`, but hidden from the OpenAPI schema. Useful for previewing in a browser or audio element if needed.
-
-### `POST /download/{result_id}`
+### `GET /download/{result_id}`
 
 Prepares the selected track in the server cache if needed, then returns the MP3 as an attachment.
 
 ```http
-POST /download/QvQ0S4VixjP2
-POST /download/QvQ0S4VixjP2?device_id=phone-01
+GET /download/stable-exact-key
+GET /download/stable-exact-key?device_id=phone-01
 ```
 
 Response:
@@ -274,8 +266,7 @@ When `device_id` is provided, the backend checks that device's library before se
     "message": "This track is already saved on the device.",
     "details": {
       "device_id": "phone-01",
-      "track_key": "stable-exact-key",
-      "base_track_key": "stable-title-artist-key"
+      "result_id": "stable-exact-key"
     }
   }
 }
@@ -288,10 +279,10 @@ Client handling:
 
 ### `GET /saved-songs`
 
-Lists all songs currently in the server cache. Each song is returned as a normal playable search result with a fresh `result_id`.
+Lists songs currently in the server cache, newest recently accessed first. Each song is returned as a normal playable search result with its permanent `result_id`.
 
 ```http
-GET /saved-songs
+GET /saved-songs?limit=50&offset=0
 ```
 
 Response:
@@ -305,9 +296,7 @@ Response:
       "duration": 320,
       "cover_url": "https://...",
       "album": "Discovery",
-      "result_id": "QvQ0S4VixjP2",
-      "track_key": "stable-exact-key",
-      "base_track_key": "stable-title-artist-key",
+      "result_id": "stable-exact-key",
       "availability": {
         "in_server_cache": true,
         "on_device": false,
@@ -316,15 +305,72 @@ Response:
       }
     }
   ],
-  "count": 1
+  "count": 1,
+  "total": 1,
+  "limit": 50,
+  "offset": 0,
+  "has_more": false
 }
 ```
 
 Client handling:
 
 - Use `result_id` with `/stream/{result_id}` and `/download/{result_id}`.
-- Refresh this list when opening the saved/downloaded screen because `result_id`s are temporary.
+- Increment `offset` by `count` when `has_more = true`.
 - If this list is empty, there are no server-cached songs yet.
+
+### `DELETE /tracks/{result_id}`
+
+Deletes one track from the server cache/catalog. Use this when the user removes a server-cached song.
+
+```http
+DELETE /tracks/stable-exact-key
+```
+
+Response:
+
+```json
+{
+  "result_id": "stable-exact-key",
+  "cache_deleted": true
+}
+```
+
+### `DELETE /cache`
+
+Deletes all cached MP3 files and resets the cache index. The track catalog and device library are kept.
+
+```http
+DELETE /cache
+```
+
+Response:
+
+```json
+{
+  "deleted_count": 12,
+  "track_catalog_cleared": false,
+  "device_library_cleared": false
+}
+```
+
+### `DELETE /server-temp`
+
+Clears all backend temporary state: cached MP3s, track catalog, and device library.
+
+```http
+DELETE /server-temp
+```
+
+Response:
+
+```json
+{
+  "deleted_count": 12,
+  "track_catalog_cleared": true,
+  "device_library_cleared": true
+}
+```
 
 ### `POST /device-library/sync`
 
@@ -339,8 +385,7 @@ Request:
   "device_id": "phone-01",
   "tracks": [
     {
-      "track_key": "stable-exact-key",
-      "base_track_key": "stable-title-artist-key"
+      "result_id": "stable-exact-key"
     }
   ]
 }
@@ -360,7 +405,7 @@ Important:
 
 - This replaces all known tracks for that device.
 - It does not delete server cache files.
-- Send every locally saved track key you know about.
+- Send every locally saved `result_id` you know about.
 
 ### `POST /device-library/confirm-download`
 
@@ -368,22 +413,10 @@ Adds one track to the backend's known library for a device.
 
 Use this after the player successfully saves a downloaded MP3 locally.
 
-Preferred request:
-
 ```json
 {
   "device_id": "phone-01",
-  "track_key": "stable-exact-key",
-  "base_track_key": "stable-title-artist-key"
-}
-```
-
-Fallback request while the `result_id` is still valid:
-
-```json
-{
-  "device_id": "phone-01",
-  "result_id": "QvQ0S4VixjP2"
+  "result_id": "stable-exact-key"
 }
 ```
 
@@ -419,7 +452,7 @@ Common errors:
 | --- | --- | --- | --- |
 | 400 | `bad_request` | Invalid logical request, such as empty query after trimming. | Fix request or show validation message. |
 | 404 | `provider_not_found` | Unknown source ID. | Remove source or refresh `/sources`. |
-| 404 | `search_result_not_found` | `result_id` expired or does not exist. | Search again or call `/saved-songs` again. |
+| 404 | `search_result_not_found` | `result_id` does not exist in the track catalog. | Search again or call `/saved-songs` again. |
 | 404 | `cache_entry_not_found` | Cached file was missing. | Refresh saved songs or search again. |
 | 409 | `track_already_on_device` | Device already has this song. | Show already downloaded/local state. |
 | 422 | `validation_error` | Request body/query failed FastAPI validation. | Fix payload. |
@@ -448,9 +481,14 @@ Downloads require `ffmpeg` in `PATH`, because `yt-dlp` uses it to convert audio 
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `SLEEWAVE_CACHE_DIR` | OS temp dir + `sleewave-media-cache` | Stores cached MP3s, cache index, search results, and device library. |
+| `SLEEWAVE_CACHE_DIR` | OS temp dir + `sleewave-media-cache` | Stores cached MP3s, cache index, track catalog, and device library. |
 | `SLEEWAVE_CACHE_MAX_MB` | `1024` | Maximum server cache size in MB. |
-| `SLEEWAVE_SEARCH_RESULT_TTL_SECONDS` | `1800` | How long `result_id`s stay valid. |
+| `SLEEWAVE_YTDLP_COOKIES` | unset | Raw Netscape cookies.txt content for `yt-dlp` authentication. |
+| `SLEEWAVE_YTDLP_COOKIES_BASE64` | unset | Base64-encoded Netscape cookies.txt content for `yt-dlp` authentication. |
+| `SLEEWAVE_YTDLP_COOKIES_FILE` | unset | Path to a Netscape cookies.txt file for `yt-dlp` authentication. |
+| `SLEEWAVE_YTDLP_COOKIES_FROM_BROWSER` | unset | Browser cookie source for `yt-dlp`, for example `chrome`, `firefox:default`, or `chrome:Profile 1`. |
+
+Cookie env precedence is `SLEEWAVE_YTDLP_COOKIES_FILE`, then `SLEEWAVE_YTDLP_COOKIES_BASE64`, then `SLEEWAVE_YTDLP_COOKIES`, then `SLEEWAVE_YTDLP_COOKIES_FROM_BROWSER`.
 
 ## Client Implementation Notes
 
@@ -465,8 +503,8 @@ Recommended client states:
 Use `availability.preferred_origin` to choose the best default:
 
 - `device`: play the local file if the app has it.
-- `server`: play through `/stream/{result_id}`.
-- `remote`: call `/stream/{result_id}` and allow the backend to download/cache first.
+- `server`: play through `GET /stream/{result_id}`.
+- `remote`: call `GET /stream/{result_id}` and allow the backend to download/cache first.
 
 ### Download Button Behavior
 
@@ -492,14 +530,14 @@ Because `/search` is SSE:
 
 Cached matches are emitted before provider results, so they should appear instantly when available.
 
-### Result Expiry Recovery
+### Missing Result Recovery
 
 If `/stream/{result_id}` or `/download/{result_id}` returns `search_result_not_found`:
 
 1. If the track came from `/saved-songs`, call `/saved-songs` again.
 2. If it came from search, repeat the search.
-3. Match by `track_key` or `base_track_key`.
-4. Retry with the new `result_id`.
+3. Match by `result_id`.
+4. Retry with the returned `result_id`.
 
 ## Local Run
 
@@ -522,4 +560,3 @@ Open:
 ```text
 http://127.0.0.1:8000
 ```
-
