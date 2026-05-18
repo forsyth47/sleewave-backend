@@ -42,8 +42,6 @@ class VKProvider(IMusicProvider):
 
         load_dotenv()
         cache_root = Path(os.getenv("SLEEWAVE_CACHE_DIR", str(Path(tempfile.gettempdir()) / "sleewave-media-cache")))
-        # ensure cache dir exists
-        cache_root.mkdir(parents=True, exist_ok=True)
 
         self.token_cache_file = str(cache_root / "vk_access_token.json")
         self.access_token = None

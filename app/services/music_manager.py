@@ -4,7 +4,7 @@ import asyncio
 import os
 import tempfile
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -28,6 +28,7 @@ from app.domain.models import (
     TrackDeleteResponse,
 )
 from app.interfaces.music_provider import IMusicProvider
+from app.main import ensure_cache_dir
 from app.providers.soundcloud import SoundCloudProvider
 from app.providers.vk import VKProvider
 from app.providers.youtube import YouTubeProvider
@@ -65,6 +66,7 @@ class MusicManager:
                 str(Path(tempfile.gettempdir()) / "sleewave-media-cache"),
             )
         )
+        ensure_cache_dir()
         max_cache_mb = int(os.getenv("SLEEWAVE_CACHE_MAX_MB", "1024"))
         self.cache = MediaCacheService(
             cache_root,
@@ -103,7 +105,7 @@ class MusicManager:
                 info=SourceInfo(id="vk", name="VK Music"),
                 provider=VKProvider(),
                 priority=50,
-            )
+            ),
         }
 
     def list_sources(self) -> list[SourceInfo]:
@@ -330,8 +332,8 @@ class MusicManager:
                         album=track.album,
                         track_key=track.track_key,
                         base_track_key=track.base_track_key,
-                        created_at=datetime.utcnow(),
-                        last_accessed_at=datetime.utcnow(),
+                        created_at=datetime.now(timezone.utc),
+                        last_accessed_at=datetime.now(timezone.utc),
                     )
                     return remote_record, False
             except Exception as e:
