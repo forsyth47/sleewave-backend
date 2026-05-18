@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Optional
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse, RedirectResponse
 
 from app.domain.models import (
     ApiError,
@@ -45,7 +47,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-manager = MusicManager()
+# Initialize manager with optional redirect_to_original_url flag from environment
+redirect_to_original = os.getenv("SLEEWAVE_REDIRECT_TO_ORIGINAL_URL", "false").lower() == "true"
+manager = MusicManager(redirect_to_original_url=redirect_to_original)
 
 
 def _error_payload(error: ApiError) -> dict:
@@ -68,6 +72,10 @@ def _model_json(model) -> str:
         return json.dumps(model.model_dump(exclude_none=True, exclude_defaults=True))
     return json.dumps(model.dict(exclude_none=True, exclude_defaults=True))
 
+def ensure_cache_dir():
+    cache_path = Path(manager.cache_dir)
+    if not cache_path.exists():
+        cache_path.mkdir(parents=True, exist_ok=True)
 
 def _sse(event: SearchStreamEvent) -> str:
     return f"event: {event.event}\ndata: {_model_json(event)}\n\n"
@@ -78,7 +86,7 @@ async def _search_event_stream(
     query: str,
     limit: int,
     offset: int,
-    device_id: str | None,
+    device_id: Optional[str],
 ) -> AsyncIterator[str]:
     async for event in manager.stream_search(selector, query, limit, offset, device_id):
         yield _sse(event)
@@ -139,11 +147,11 @@ async def sources() -> dict[str, object]:
 @app.get("/search")
 async def search(
     q: str = Query(..., min_length=1),
-    source: str | None = Query(default=None),
-    sources: str | None = Query(default=None),
+    source: Optional[str] = Query(default=None),
+    sources: Optional[str] = Query(default=None),
     limit: int = Query(default=10, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
-    device_id: str | None = Query(default=None),
+    device_id: Optional[str] = Query(default=None),
 ) -> StreamingResponse:
     selector = sources or source or "all"
     manager.prepare_search_request(selector, q, limit, offset)
@@ -158,13 +166,19 @@ async def search(
     "/stream/{result_id}",
     response_class=FileResponse,
 )
-async def stream(result_id: str) -> FileResponse:
+async def stream(result_id: str):
     return await _stream_result(result_id)
 
 
-async def _stream_result(result_id: str) -> FileResponse:
+async def _stream_result(result_id: str):
     record, _ = await manager.prepare_cached_track(result_id)
     file_name = _safe_file_name(record.title, record.artist)
+
+    # If file_path is a remote URL (starts with http), redirect to it
+    if record.file_path.startswith("http"):
+        return RedirectResponse(url=record.file_path)
+
+    # Otherwise, serve as a local file
     return FileResponse(
         record.file_path,
         media_type="audio/mpeg",
@@ -178,18 +192,24 @@ async def _stream_result(result_id: str) -> FileResponse:
 )
 async def download(
     result_id: str,
-    device_id: str | None = Query(default=None),
-) -> FileResponse:
+    device_id: Optional[str] = Query(default=None),
+):
     return await _download_result(result_id, device_id)
 
 
-async def _download_result(result_id: str, device_id: str | None) -> FileResponse:
+async def _download_result(result_id: str, device_id: Optional[str]):
     record, _ = await manager.prepare_cached_track(
         result_id,
         device_id=device_id,
         block_device_duplicate=True,
     )
     file_name = _safe_file_name(record.title, record.artist)
+
+    # If file_path is a remote URL (starts with http), redirect to it
+    if record.file_path.startswith("http"):
+        return RedirectResponse(url=record.file_path)
+
+    # Otherwise, serve as a local file
     return FileResponse(
         record.file_path,
         media_type="audio/mpeg",

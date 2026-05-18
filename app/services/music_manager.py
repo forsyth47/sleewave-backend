@@ -4,6 +4,7 @@ import asyncio
 import os
 import tempfile
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -28,6 +29,7 @@ from app.domain.models import (
 )
 from app.interfaces.music_provider import IMusicProvider
 from app.providers.soundcloud import SoundCloudProvider
+from app.providers.vk import VKProvider
 from app.providers.youtube import YouTubeProvider
 from app.providers.ytmusic import YTMusicProvider
 from app.services.device_library import DeviceLibraryService
@@ -56,7 +58,7 @@ class ProviderEntry:
 
 
 class MusicManager:
-    def __init__(self) -> None:
+    def __init__(self, redirect_to_original_url: bool = False) -> None:
         cache_root = Path(
             os.getenv(
                 "SLEEWAVE_CACHE_DIR",
@@ -70,6 +72,7 @@ class MusicManager:
         )
         self.device_library = DeviceLibraryService(cache_root / "device_library.json")
         self.song_catalog = SongCatalog(cache_root / "song_catalog.json")
+        self.redirect_to_original_url = redirect_to_original_url
         self._providers: dict[str, ProviderEntry] = {
             "ytm": ProviderEntry(
                 info=SourceInfo(id="ytm", name="YouTube Music"),
@@ -97,15 +100,10 @@ class MusicManager:
                 priority=40,
             ),
             "vk": ProviderEntry(
-                info=SourceInfo(
-                    id="vk",
-                    name="VK Music",
-                    available=False,
-                    message="VK integration has not been implemented yet.",
-                ),
-                provider=None,
+                info=SourceInfo(id="vk", name="VK Music"),
+                provider=VKProvider(),
                 priority=50,
-            ),
+            )
         }
 
     def list_sources(self) -> list[SourceInfo]:
@@ -306,6 +304,38 @@ class MusicManager:
 
         if block_device_duplicate and device_id and self.device_library.has_track(device_id, track):
             raise TrackAlreadyOnDeviceError(device_id, track.result_id or track.track_key)
+
+        # If redirect_to_original_url is enabled and this is a VK track, return the direct URL
+        if self.redirect_to_original_url and track.source == "vk":
+            try:
+                provider = self._get_download_provider("vk")
+                vk_url = f"https://vk.com/audio{track.id}"
+                direct_url_info = provider.get_direct_url(vk_url)
+
+                if direct_url_info:
+                    # get_direct_url returns (url, title, artist, thumbnail)
+                    direct_url = direct_url_info[0] if isinstance(direct_url_info, tuple) else direct_url_info
+
+                    # Create a CacheRecord with the remote URL as the file_path
+                    remote_record = CacheRecord(
+                        cache_key=result_id,
+                        file_path=direct_url,
+                        file_size=0,  # Remote URL, no local file
+                        source=track.source,
+                        track_id=track.id,
+                        title=track.title,
+                        artist=track.artist,
+                        duration=track.duration or 0,
+                        cover_url=track.cover_url,
+                        album=track.album,
+                        track_key=track.track_key,
+                        base_track_key=track.base_track_key,
+                        created_at=datetime.utcnow(),
+                        last_accessed_at=datetime.utcnow(),
+                    )
+                    return remote_record, False
+            except Exception as e:
+                print(f"Failed to get direct VK URL, falling back to caching: {e}")
 
         async def downloader(target_path: str) -> Optional[str]:
             provider = self._get_download_provider(track.source)

@@ -19,7 +19,7 @@ Sleewave Backend is a local media service for a Flutter client. It aggregates mu
 - `yt` - available
 - `sc` - available
 - `spotify` - listed but disabled until integration is implemented
-- `vk` - listed but disabled until integration is implemented
+- `vk` - available
 
 ## API overview
 

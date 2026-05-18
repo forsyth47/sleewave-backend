@@ -6,3 +6,4 @@ httpx
 yt-dlp
 mutagen
 ytmusicapi
+requests

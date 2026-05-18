@@ -5,5 +5,8 @@ __pycache__/
 *.m3u8.venv/
 .sleewave-cache/
 tmp/
-cookies/
+cookies/*
 cookies.txt
+!cookies/yt_cookies.txt.example
+!cookies/vk_cookies.txt.example
+.cache/
