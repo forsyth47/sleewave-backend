@@ -28,7 +28,6 @@ from app.domain.models import (
     TrackDeleteResponse,
 )
 from app.interfaces.music_provider import IMusicProvider
-from app.main import ensure_cache_dir
 from app.providers.soundcloud import SoundCloudProvider
 from app.providers.vk import VKProvider
 from app.providers.youtube import YouTubeProvider
@@ -66,7 +65,11 @@ class MusicManager:
                 str(Path(tempfile.gettempdir()) / "sleewave-media-cache"),
             )
         )
-        ensure_cache_dir()
+        # Ensure the cache directory exists at initialization
+        cache_path = Path(cache_root)
+        if not cache_path.exists():
+            cache_path.mkdir(parents=True, exist_ok=True)
+
         max_cache_mb = int(os.getenv("SLEEWAVE_CACHE_MAX_MB", "1024"))
         self.cache = MediaCacheService(
             cache_root,

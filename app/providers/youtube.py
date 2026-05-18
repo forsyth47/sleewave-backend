@@ -25,6 +25,7 @@ def _best_thumbnail(entry: dict) -> Optional[str]:
 class YouTubeProvider(IMusicProvider):
     def __init__(self) -> None:
         self.common_options = {
+            "cookiefile": "cookies/yt_cookies.txt",
             "format": "bestaudio/best",
             "noplaylist": True,
             "quiet": True,

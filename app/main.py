@@ -72,11 +72,6 @@ def _model_json(model) -> str:
         return json.dumps(model.model_dump(exclude_none=True, exclude_defaults=True))
     return json.dumps(model.dict(exclude_none=True, exclude_defaults=True))
 
-def ensure_cache_dir():
-    cache_path = Path(manager.cache_dir)
-    if not cache_path.exists():
-        cache_path.mkdir(parents=True, exist_ok=True)
-
 def _sse(event: SearchStreamEvent) -> str:
     return f"event: {event.event}\ndata: {_model_json(event)}\n\n"
 

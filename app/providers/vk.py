@@ -279,16 +279,17 @@ class VKProvider(IMusicProvider):
             timeout=15,
         )
 
-        if "error" in resp and "access_token has expired" in resp["error"].get("error_msg", ""):
+        payload = resp.json() if resp.status_code == 200 else {}
+        if isinstance(payload, dict) and "error" in payload:
+            error = payload["error"]
+            if "access_token has expired" in error.get("error_msg", ""):
                 print("Access token expired. Generating new token...")
                 self._generate_and_store_token()
-                return self.get_direct_url(url)  # Retry with new token
-        if 'error' in resp:
-            print(f"VK API error: {resp['error']}")
-            return None
+                return await self.search(query, limit=limit, offset=offset)
+            print(f"VK API error: {error}")
+            return []
 
         # print(resp.text)
-        payload = resp.json() if resp.status_code == 200 else {}
         entries = payload.get("response", {}).get("items", []) if isinstance(payload, dict) else []
         print(f"VK search response entries: {len(entries)}")
         results = []
@@ -296,6 +297,10 @@ class VKProvider(IMusicProvider):
         for entry in entries[offset: offset + limit]:
             if not entry:
                 continue
+
+            # Extract album title if it's a dict, otherwise use as string
+            album_obj = entry.get("album")
+            album_name = album_obj.get("title", "VK Music") if isinstance(album_obj, dict) else (album_obj or "VK Music")
 
             results.append(
                 Track(
@@ -305,7 +310,7 @@ class VKProvider(IMusicProvider):
                     source="vk",
                     duration=_duration_seconds(entry.get("duration")),
                     cover_url=entry.get("cover_url") or entry.get("thumbnail"),
-                    album=entry.get("album") or "VK Music",
+                    album=album_name,
                 )
             )
         return results
@@ -335,7 +340,7 @@ class VKProvider(IMusicProvider):
             clean_title = re.sub(r'[\/:*?"<>|]', '_', title.strip())
             clean_artist = re.sub(r'[\/:*?"<>|]', '_', artist.strip())
             output_filename = f"{clean_artist} - {clean_title}.mp3"
-        final_final_path = str(final_path.with_name(output_filename))
+        output_file_path = final_path.with_name(output_filename)
         try:
             cmd = ['ffmpeg', '-y']  # -y = overwrite without asking
             cmd.extend(['-i', direct_url])
@@ -355,12 +360,12 @@ class VKProvider(IMusicProvider):
             else:
                 cmd.extend(['-map', '0:a:0'])
 
-            cmd.extend(['-f', 'mp3', final_final_path])
+            cmd.extend(['-f', 'mp3', str(output_file_path)])
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
-            if result.returncode == 0:
-                return final_final_path
-            elif not final_final_path.exists():
-                raise RuntimeError("VK download failed: result.stderr")
-            return str(final_final_path)
+            if result.returncode == 0 and output_file_path.exists():
+                return str(output_file_path)
+            if not output_file_path.exists():
+                raise RuntimeError(f"VK download failed: {result.stderr}")
+            return str(output_file_path)
         except Exception as exc:
             raise RuntimeError(f"VK download failed: {exc}") from exc
