@@ -1,24 +1,25 @@
 from __future__ import annotations
-from http import cookies
-from unittest import result
 
-import requests
-import json
-import time
 import base64
+import json
+import logging
 import os
+import re
 import subprocess
 import tempfile
+import time
 from pathlib import Path
-import re
 from typing import Optional
+
+import requests
+from dotenv import load_dotenv
 
 from app.domain.models import Track
 from app.interfaces.music_provider import IMusicProvider
 from app.providers.download_helpers import ensure_ffmpeg_available, ytdlp_auth_options
 
 
-from dotenv import load_dotenv
+logger = logging.getLogger(__name__)
 
 
 def _duration_seconds(value) -> int:
@@ -56,7 +57,7 @@ class VKProvider(IMusicProvider):
                         cookies = f.read().strip()
                         self.cookies = cookies
                 except Exception as e:
-                    print(f"Failed to read VK cookies from {vk_cookies_path}: {e}")
+                    logger.warning("Failed to read VK cookies from %s: %s", vk_cookies_path, e)
                     cookies = None
 
         # print("Initializing VKProvider with cookies:", "Yes" if cookies else "No")
@@ -69,13 +70,13 @@ class VKProvider(IMusicProvider):
                 if token_data["expires"] > now:
                     self.access_token = token_data["access_token"]
                     self.token_expires = token_data["expires"]
-                    self.user_id = token_data["user_id"]
-                    print("Loaded access token from cache.")
+                    self.user_id = token_data.get("user_id", 0)
+                    logger.debug("Loaded access token from cache.")
                 else:
-                    print("Cached access token expired. Generating new token...")
+                    logger.debug("Cached access token expired. Generating new token...")
                     self._generate_and_store_token()
             else:
-                print("No cached access token found. Generating new token...")
+                logger.debug("No cached access token found. Generating new token...")
                 self._generate_and_store_token()
 
     def _load_token_cache(self):
@@ -84,7 +85,7 @@ class VKProvider(IMusicProvider):
                 with open(self.token_cache_file, "r") as f:
                     return json.load(f)
             except Exception as e:
-                print(f"Failed to load token cache: {e}")
+                logger.warning("Failed to load token cache: %s", e)
         return None
 
     def _save_token_cache(self, access_token, expires, user_id):
@@ -92,13 +93,14 @@ class VKProvider(IMusicProvider):
             with open(self.token_cache_file, "w") as f:
                 json.dump({"access_token": access_token, "expires": expires, "user_id": user_id}, f)
         except Exception as e:
-            print(f"Failed to save token cache: {e}")
+            logger.warning("Failed to save token cache: %s", e)
 
     def _generate_and_store_token(self):
         form_data = "version=1&app_id=6287487"
         try:
             resp = self.session.post("https://login.vk.com/?act=web_token", data=form_data, timeout=10)
-            print(f"Access token response: {resp.text}")
+            #i love Danger hehe
+            #logger.debug("VK access token response received: status=%s", resp.status_code)
             if resp.status_code == 200:
                 try:
                     resp_json = resp.json()
@@ -117,15 +119,15 @@ class VKProvider(IMusicProvider):
                         self.token_expires = expires
                         self.user_id = user_id
                         self._save_token_cache(access_token, expires, user_id)
-                        print("Access token obtained and cached successfully.")
+                        logger.debug("Access token obtained and cached successfully.")
                     else:
-                        print("Failed to extract access token from response.")
+                        logger.warning("Failed to extract access token from response.")
                 except Exception as e:
-                    print(f"Failed to parse access token response as JSON: {e}")
+                    logger.warning("Failed to parse access token response as JSON: %s", e)
             else:
-                print(f"Failed to get access token. HTTP status code: {resp.status_code}")
+                logger.warning("Failed to get access token. HTTP status code: %s", resp.status_code)
         except Exception as e:
-            print(f"Error while obtaining access token: {e}")
+            logger.warning("Error while obtaining access token: %s", e)
 
     # ====================== DECRYPTION ======================
 
@@ -161,14 +163,14 @@ class VKProvider(IMusicProvider):
                 elif cmd == 's':
                     data = self._s(data, int(args[0]) if args else 0)
                 elif cmd == 'i':
-                    data = self._i(data, int(args[0]) if args else 0 ^ user_id)
+                    data = self._i(data, (int(args[0]) if args else 0) ^ user_id)
                 elif cmd == 'x':
                     data = self._x(data, args[0] if args else "")
 
             return data if data.startswith(("http://", "https://")) else None
 
         except Exception as e:
-            print(f"Decryption failed: {e}")
+            logger.warning("Decryption failed: %s", e)
             return None
 
     def _r(self, s: str, shift: int) -> str:
@@ -199,21 +201,24 @@ class VKProvider(IMusicProvider):
 
         # ====================== MAIN API ======================
 
-    def get_direct_url(self, url: str) -> Optional[str]:
+    def get_direct_url(self, url: str) -> Optional[tuple[str, str, str, str]]:
         match = re.search(r'audio([-\d]+)_(\d+)', url)
         if match:
             owner_id = int(match.group(1))
             audio_id = int(match.group(2))
             # print(f"Extracted owner_id: {owner_id}, audio_id: {audio_id}")
         else:
-            print("Failed to extract owner_id and audio_id from URL.")
-            print(f"URL: {url}")
+            logger.warning("Failed to extract owner_id and audio_id from URL: %s", url)
             return None
 
         try:
-            if not hasattr(self, 'access_token'):
-                print("Error: access_token is not set. Cannot proceed.")
-                return None
+            if not self.access_token:
+                logger.debug("Access token is missing. Generating new token...")
+                self._generate_and_store_token()
+                if not self.access_token:
+                    logger.error("access_token is not available. Cannot proceed.")
+                    return None
+
             resp = self.session.post(
                 "https://api.vk.com/method/audio.getById?v=5.276&client_id=6287487",
                 data={
@@ -223,26 +228,24 @@ class VKProvider(IMusicProvider):
                 timeout=40
             )
 
-            # print(resp.text)  # Debug: print raw response content
-
             if resp.status_code != 200:
-                print(f"HTTP Error: {resp.status_code}")
+                logger.warning("HTTP Error: %s", resp.status_code)
                 return None
 
             # Try to parse JSON directly
             try:
                 data = resp.json()
             except Exception as e:
-                print(f"Could not parse response as JSON: {e}")
+                logger.warning("Could not parse response as JSON: %s", e)
                 return None
 
             # VK API returns 'response' key for success, 'error' for error
             if "error" in data and "access_token has expired" in data["error"].get("error_msg", ""):
-                print("Access token expired. Generating new token...")
+                logger.debug("Access token expired. Generating new token...")
                 self._generate_and_store_token()
                 return self.get_direct_url(url)  # Retry with new token
             if 'error' in data:
-                print(f"VK API error: {data['error']}")
+                logger.warning("VK API error: %s", data['error'])
                 return None
             if 'response' in data and isinstance(data['response'], list) and len(data['response']) > 0:
                 audio_info = data['response'][0]
@@ -257,13 +260,15 @@ class VKProvider(IMusicProvider):
                 # If encrypted, try to decrypt
                 encrypted = audio_info.get('url')
                 if encrypted:
-                    return self.decrypt_url(encrypted, owner_id)
-                print("No url found in audio info.")
+                    decrypted_url = self.decrypt_url(encrypted, owner_id)
+                    if decrypted_url:
+                        return decrypted_url, title, artist, thumbnail
+                logger.warning("No url found in audio info.")
                 return None
-            print("Unexpected response structure.")
+            logger.warning("Unexpected response structure.")
             return None
         except Exception as e:
-            print(f"Request error: {e}")
+            logger.warning("Request error: %s", e)
             return None
 
 
@@ -283,15 +288,14 @@ class VKProvider(IMusicProvider):
         if isinstance(payload, dict) and "error" in payload:
             error = payload["error"]
             if "access_token has expired" in error.get("error_msg", ""):
-                print("Access token expired. Generating new token...")
+                logger.debug("Access token expired. Generating new token...")
                 self._generate_and_store_token()
                 return await self.search(query, limit=limit, offset=offset)
-            print(f"VK API error: {error}")
+            logger.warning("VK API error: %s", error)
             return []
 
-        # print(resp.text)
         entries = payload.get("response", {}).get("items", []) if isinstance(payload, dict) else []
-        print(f"VK search response entries: {len(entries)}")
+        # logger.debug("VK search response entries: %s", len(entries))
         results = []
 
         for entry in entries[offset: offset + limit]:
@@ -316,22 +320,27 @@ class VKProvider(IMusicProvider):
         return results
 
     async def get_stream(self, track_id: str) -> str:
-        print(f"track_id: {track_id}")
+        # logger.debug("VK get_stream track_id: %s", track_id)
         url = "https://vk.com/audio"+track_id
-        direct_url, title, artist, thumbnail = self.get_direct_url(url=url)
-        print(f"Direct URL: {direct_url}")
-        if direct_url:
-            return direct_url
-        else:
+        direct_url_info = self.get_direct_url(url=url)
+        if not direct_url_info:
             raise RuntimeError("Failed to get direct stream URL from VK.")
 
+        direct_url, title, artist, thumbnail = direct_url_info
+        # logger.debug("VK direct stream URL resolved: %s", bool(direct_url))
+        return direct_url
+
     async def download(self, track_id: str, output_path: str) -> Optional[str]:
-        print(f"track_id: {track_id}")
+        # logger.debug("VK download track_id: %s", track_id)
         url = "https://vk.com/audio"+track_id
         final_path = Path(output_path)
 
-        direct_url, title, artist, thumbnail = self.get_direct_url(url=url)
-        print(f"Direct URL: {direct_url}")
+        direct_url_info = self.get_direct_url(url=url)
+        if not direct_url_info:
+            raise RuntimeError("Failed to get direct download URL from VK.")
+
+        direct_url, title, artist, thumbnail = direct_url_info
+        # logger.debug("VK direct download URL resolved: %s", bool(direct_url))
         ensure_ffmpeg_available()
         if not title or not artist:
             output_filename = "vk_audio.mp3"

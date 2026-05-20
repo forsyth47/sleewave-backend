@@ -318,8 +318,7 @@ class MusicManager:
                 direct_url_info = provider.get_direct_url(vk_url)
 
                 if direct_url_info:
-                    # get_direct_url returns (url, title, artist, thumbnail)
-                    direct_url = direct_url_info[0] if isinstance(direct_url_info, tuple) else direct_url_info
+                    direct_url, title, artist, thumbnail = direct_url_info
 
                     # Create a CacheRecord with the remote URL as the file_path
                     remote_record = CacheRecord(
