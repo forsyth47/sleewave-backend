@@ -50,7 +50,7 @@ class VKProvider(IMusicProvider):
         self.user_id = 0
 
         if not cookies:
-            vk_cookies_path = os.getenv("SLEEWAVE_VK_COOKIES_FROM_BROWSER")
+            vk_cookies_path = os.getenv("SLEEWAVE_VK_COOKIES_FILE")
             if vk_cookies_path and os.path.exists(vk_cookies_path):
                 try:
                     with open(vk_cookies_path, "r") as f:

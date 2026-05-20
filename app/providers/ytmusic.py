@@ -22,7 +22,6 @@ class YTMusicProvider(IMusicProvider):
     def __init__(self) -> None:
         self.ytm = YTMusic()
         self.common_options = {
-            "cookiefile": "cookies/yt_cookies.txt",
             "format": "bestaudio/best",
             "quiet": True,
             "no_warnings": True,
