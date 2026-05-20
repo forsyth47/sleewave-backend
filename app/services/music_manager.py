@@ -315,7 +315,7 @@ class MusicManager:
             try:
                 provider = self._get_download_provider("vk")
                 vk_url = f"https://vk.com/audio{track.id}"
-                direct_url_info = provider.get_direct_url(vk_url)
+                direct_url_info = await provider.get_direct_url(vk_url)
 
                 if direct_url_info:
                     direct_url, title, artist, thumbnail = direct_url_info
