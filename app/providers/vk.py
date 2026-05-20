@@ -12,6 +12,9 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from yt_dlp import YoutubeDL
+from app.providers.download_helpers import ytdlp_auth_options
+
 import httpx
 
 from app.domain.models import Track
@@ -350,45 +353,81 @@ class VKProvider(IMusicProvider):
             raise RuntimeError("Failed to get direct download URL from VK.")
 
         direct_url, title, artist, thumbnail = direct_url_info
-        ensure_ffmpeg_available()
-        if not title or not artist:
-            output_filename = "vk_audio.mp3"
-        else:
-            # Clean filename
-            clean_title = re.sub(r'[\/:*?"<>|]', '_', title.strip())
-            clean_artist = re.sub(r'[\/:*?"<>|]', '_', artist.strip())
-            output_filename = f"{clean_artist} - {clean_title}.mp3"
-        output_file_path = final_path.with_name(output_filename)
-        def run_download() -> str:
-            cmd = ['ffmpeg', '-y']  # -y = overwrite without asking
-            cmd.extend(['-i', direct_url])
-            if thumbnail:
-                cmd.extend(['-i', thumbnail])
-            cmd.extend(['-c:a', 'copy'])
-            if title:
-                cmd.extend(['-metadata', f'title={title}'])
-            if artist:
-                cmd.extend(['-metadata', f'artist={artist}'])
-                cmd.extend(['-metadata', f'album_artist={artist}'])
-            if thumbnail:
-                cmd.extend(['-map', '0:a:0'])
-                cmd.extend(['-map', '1:v:0'])
-                cmd.extend(['-c:v', 'copy'])
-                cmd.extend(['-disposition:v', 'attached_pic'])
-            else:
-                cmd.extend(['-map', '0:a:0'])
+        # Prefer yt-dlp for VK HLS/m3u8 streams (faster and handles fragments).
+        # Keep the old ffmpeg-based subprocess flow commented out for future reference.
+        # ensure_ffmpeg_available()  # yt-dlp postprocessors still require ffmpeg
 
-            cmd.extend(['-f', 'mp3', str(output_file_path)])
+        # Build a safe output template based on requested final_path
+        output_template = str(final_path.with_suffix(".%(ext)s"))
 
-            # Get the log of the subprocess for debugging while it is running!
-            result = subprocess.run(cmd, capture_output=False, text=True, timeout=180)
-            if result.returncode != 0:
-                raise RuntimeError(f"VK download failed: {result.stderr}")
-            if not output_file_path.exists():
-                raise RuntimeError("VK download finished without creating the expected output file.")
-            return str(output_file_path)
+        ytdlp_options = {
+            **ytdlp_auth_options(),
+            "format": "bestaudio/best",
+            "outtmpl": output_template,
+            "noplaylist": True,
+            "quiet": False,
+            "no_warnings": True,
+            "overwrites": True,
+            'http_chunk_size': 5242880, # 5MB
+            'remote_components': {'ejs:github'},
+            'concurrent_fragment_downloads': 20,
+            "hls_prefer_native": True,
+            'retries': 3,
+            'socket_timeout': 10,
+            'fragment_retries': 3,
+            'buffersize': 1024 * 1024 * 64,
+            # "postprocessors": [
+            #     {
+            #         "key": "FFmpegExtractAudio",
+            #         "preferredcodec": "mp3",
+            #         "preferredquality": "192",
+            #     }
+            # ],
+            "postprocessor_args": [],
+            "final_ext": "mp3",
+        }
+
+        def ytdlp_download() -> str:
+            # Use yt-dlp to download/convert; it handles m3u8/fragments efficiently.
+            # We still prefer to ensure ffmpeg is available for postprocessing.
+            ensure_ffmpeg_available()
+            # Add some metadata via postprocessing is handled by yt-dlp if available.
+            with YoutubeDL(ytdlp_options) as ydl:
+                info = ydl.extract_info(direct_url, download=True)
+
+                downloaded_path = ydl.prepare_filename(info)
+
+            return str(downloaded_path)
+
+        # --- Legacy ffmpeg subprocess approach (commented out) ---
+        # def run_download() -> str:
+        #     cmd = ['ffmpeg', '-y']  # -y = overwrite without asking
+        #     cmd.extend(['-i', direct_url])
+        #     if thumbnail:
+        #         cmd.extend(['-i', thumbnail])
+        #     cmd.extend(['-c:a', 'copy'])
+        #     if title:
+        #         cmd.extend(['-metadata', f'title={title}'])
+        #     if artist:
+        #         cmd.extend(['-metadata', f'artist={artist}'])
+        #         cmd.extend(['-metadata', f'album_artist={artist}'])
+        #     if thumbnail:
+        #         cmd.extend(['-map', '0:a:0'])
+        #         cmd.extend(['-map', '1:v:0'])
+        #         cmd.extend(['-c:v', 'copy'])
+        #         cmd.extend(['-disposition:v', 'attached_pic'])
+        #     else:
+        #         cmd.extend(['-map', '0:a:0'])
+        #     cmd.extend(['-f', 'mp3', str(output_file_path)])
+        #     result = subprocess.run(cmd, capture_output=False, text=True, timeout=180)
+        #     if result.returncode != 0:
+        #         raise RuntimeError(f"VK download failed: {result.stderr}")
+        #     if not output_file_path.exists():
+        #         raise RuntimeError("VK download finished without creating the expected output file.")
+        #     return str(output_file_path)
 
         try:
-            return await asyncio.to_thread(run_download)
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(None, ytdlp_download)
         except Exception as exc:
-            raise RuntimeError(f"VK download failed: {exc}") from exc
+            raise RuntimeError(f"VK download (yt-dlp) failed: {exc}") from exc
