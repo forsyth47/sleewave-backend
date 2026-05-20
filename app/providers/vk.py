@@ -373,7 +373,7 @@ class VKProvider(IMusicProvider):
             "format": "bestaudio/best",
             "outtmpl": output_template,
             "noplaylist": True,
-            "quiet": False,
+            "quiet": True,
             "no_warnings": True,
             "overwrites": True,
             'http_chunk_size': 5242880, # 5MB
