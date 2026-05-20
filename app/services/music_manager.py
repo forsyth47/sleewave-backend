@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import tempfile
 from dataclasses import dataclass
@@ -50,15 +51,19 @@ from app.services.track_identity import (
 )
 
 
+logger = logging.getLogger(__name__)
+
+
 @dataclass
 class ProviderEntry:
     info: SourceInfo
     provider: Optional[IMusicProvider]
     priority: int
+    cache_direct_links_in_background: bool = True
 
 
 class MusicManager:
-    def __init__(self, redirect_to_original_url: bool = False) -> None:
+    def __init__(self) -> None:
         cache_root = Path(
             os.getenv(
                 "SLEEWAVE_CACHE_DIR",
@@ -77,22 +82,25 @@ class MusicManager:
         )
         self.device_library = DeviceLibraryService(cache_root / "device_library.json")
         self.song_catalog = SongCatalog(cache_root / "song_catalog.json")
-        self.redirect_to_original_url = redirect_to_original_url
+        self._background_cache_tasks: dict[str, asyncio.Task[None]] = {}
         self._providers: dict[str, ProviderEntry] = {
             "ytm": ProviderEntry(
                 info=SourceInfo(id="ytm", name="YouTube Music"),
                 provider=YTMusicProvider(),
                 priority=10,
+                cache_direct_links_in_background=True,
             ),
             "yt": ProviderEntry(
                 info=SourceInfo(id="yt", name="YouTube"),
                 provider=YouTubeProvider(),
                 priority=20,
+                cache_direct_links_in_background=True,
             ),
             "sc": ProviderEntry(
                 info=SourceInfo(id="sc", name="SoundCloud"),
                 provider=SoundCloudProvider(),
                 priority=30,
+                cache_direct_links_in_background=True,
             ),
             "spotify": ProviderEntry(
                 info=SourceInfo(
@@ -103,11 +111,13 @@ class MusicManager:
                 ),
                 provider=None,
                 priority=40,
+                cache_direct_links_in_background=False,
             ),
             "vk": ProviderEntry(
                 info=SourceInfo(id="vk", name="VK Music"),
                 provider=VKProvider(),
                 priority=50,
+                cache_direct_links_in_background=True,
             ),
         }
 
@@ -300,6 +310,7 @@ class MusicManager:
         *,
         device_id: Optional[str] = None,
         block_device_duplicate: bool = False,
+        direct_url: bool = False,
     ) -> tuple[CacheRecord, bool]:
         try:
             track = hydrate_track_keys(self.song_catalog.get_track(result_id))
@@ -310,36 +321,17 @@ class MusicManager:
         if block_device_duplicate and device_id and self.device_library.has_track(device_id, track):
             raise TrackAlreadyOnDeviceError(device_id, track.result_id or track.track_key)
 
-        # If redirect_to_original_url is enabled and this is a VK track, return the direct URL
-        if self.redirect_to_original_url and track.source == "vk":
-            try:
-                provider = self._get_download_provider("vk")
-                vk_url = f"https://vk.com/audio{track.id}"
-                direct_url_info = await provider.get_direct_url(vk_url)
+        cached_record = self.cache.find_by_track(track)
+        if cached_record:
+            self.cache.touch(cached_record.cache_key)
+            return cached_record, True
 
-                if direct_url_info:
-                    direct_url, title, artist, thumbnail = direct_url_info
-
-                    # Create a CacheRecord with the remote URL as the file_path
-                    remote_record = CacheRecord(
-                        cache_key=result_id,
-                        file_path=direct_url,
-                        file_size=0,  # Remote URL, no local file
-                        source=track.source,
-                        track_id=track.id,
-                        title=track.title,
-                        artist=track.artist,
-                        duration=track.duration or 0,
-                        cover_url=track.cover_url,
-                        album=track.album,
-                        track_key=track.track_key,
-                        base_track_key=track.base_track_key,
-                        created_at=datetime.now(timezone.utc),
-                        last_accessed_at=datetime.now(timezone.utc),
-                    )
-                    return remote_record, False
-            except Exception as e:
-                print(f"Failed to get direct VK URL, falling back to caching: {e}")
+        if direct_url:
+            direct_stream_url = await self._resolve_direct_stream_url(track)
+            if direct_stream_url:
+                if self._should_cache_direct_link_in_background(track.source):
+                    self._schedule_background_cache(track, stream_url=direct_stream_url)
+                return self._build_remote_cache_record(track, direct_stream_url), False
 
         async def downloader(target_path: str) -> Optional[str]:
             provider = self._get_download_provider(track.source)
@@ -422,6 +414,66 @@ class MusicManager:
     def get_cached_record(self, cache_key: str):
         self.cache.touch(cache_key)
         return self.cache.get_by_cache_key(cache_key)
+
+    def _build_remote_cache_record(self, track: Track, direct_url: str) -> CacheRecord:
+        now = datetime.now(timezone.utc)
+        return CacheRecord(
+            cache_key=track.track_key or track.result_id or track.id,
+            file_path=direct_url,
+            file_size=0,
+            source=track.source,
+            track_id=track.id,
+            title=track.title,
+            artist=track.artist,
+            duration=track.duration or 0,
+            cover_url=track.cover_url,
+            album=track.album,
+            track_key=track.track_key or "",
+            base_track_key=track.base_track_key or "",
+            created_at=now,
+            last_accessed_at=now,
+        )
+
+    def _schedule_background_cache(self, track: Track, stream_url: Optional[str] = None) -> None:
+        cache_key = track.track_key or track.result_id or track.id
+        existing = self._background_cache_tasks.get(cache_key)
+        if existing and not existing.done():
+            return
+
+        async def warm_cache() -> None:
+            try:
+                provider = self._get_download_provider(track.source)
+
+                async def downloader(target_path: str) -> Optional[str]:
+                    return await provider.download(track.id, target_path, stream_url=stream_url)
+
+                await self.cache.ensure_cached(track, downloader)
+            except Exception as exc:
+                logger.warning("Background cache warm failed for %s: %s", cache_key, exc)
+            finally:
+                self._background_cache_tasks.pop(cache_key, None)
+
+        self._background_cache_tasks[cache_key] = asyncio.create_task(warm_cache())
+
+    async def _resolve_direct_stream_url(self, track: Track) -> Optional[str]:
+        try:
+            provider = self._get_download_provider(track.source)
+            direct_url = await provider.get_stream(track.id)
+            if isinstance(direct_url, str) and direct_url.startswith(("http://", "https://")):
+                return direct_url
+            return None
+        except Exception as exc:
+            logger.warning(
+                "Could not resolve direct stream URL for %s:%s: %s",
+                track.source,
+                track.id,
+                exc,
+            )
+            return None
+
+    def _should_cache_direct_link_in_background(self, source_id: str) -> bool:
+        entry = self._providers.get(source_id)
+        return bool(entry and entry.cache_direct_links_in_background)
 
     async def _search_source(self, source_id: str, query: str, limit: int) -> list[Track]:
         entry = self._providers[source_id]

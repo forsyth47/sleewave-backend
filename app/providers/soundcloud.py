@@ -133,10 +133,16 @@ class SoundCloudProvider(IMusicProvider):
 
         return await loop.run_in_executor(None, extract_stream_url)
 
-    async def download(self, track_id: str, output_path: str) -> Optional[str]:
+    async def download(
+        self,
+        track_id: str,
+        output_path: str,
+        stream_url: Optional[str] = None,
+    ) -> Optional[str]:
         loop = asyncio.get_running_loop()
         final_path = Path(output_path)
         output_template = str(final_path.with_suffix(".%(ext)s"))
+        url = stream_url or track_id
 
         download_options = {
             **self.common_options,
@@ -156,7 +162,7 @@ class SoundCloudProvider(IMusicProvider):
         def download_track():
             ensure_ffmpeg_available()
             with YoutubeDL(download_options) as ydl:
-                ydl.download([track_id])
+                ydl.download([url])
             if not final_path.exists():
                 raise RuntimeError("SoundCloud download finished without creating an MP3 file.")
             return str(final_path)

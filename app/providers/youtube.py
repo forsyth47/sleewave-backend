@@ -71,9 +71,14 @@ class YouTubeProvider(IMusicProvider):
 
         return await loop.run_in_executor(None, extract_stream_url)
 
-    async def download(self, track_id: str, output_path: str) -> Optional[str]:
+    async def download(
+        self,
+        track_id: str,
+        output_path: str,
+        stream_url: Optional[str] = None,
+    ) -> Optional[str]:
         loop = asyncio.get_running_loop()
-        url = f"https://www.youtube.com/watch?v={track_id}"
+        url = stream_url or f"https://www.youtube.com/watch?v={track_id}"
         final_path = Path(output_path)
         output_template = str(final_path.with_suffix(".%(ext)s"))
 

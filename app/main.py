@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -47,9 +46,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize manager with optional redirect_to_original_url flag from environment
-redirect_to_original = os.getenv("SLEEWAVE_REDIRECT_TO_ORIGINAL_URL", "false").lower() == "true"
-manager = MusicManager(redirect_to_original_url=redirect_to_original)
+manager = MusicManager()
 
 
 def _error_payload(error: ApiError) -> dict:
@@ -161,12 +158,15 @@ async def search(
     "/stream/{result_id}",
     response_class=FileResponse,
 )
-async def stream(result_id: str):
-    return await _stream_result(result_id)
+async def stream(
+    result_id: str,
+    direct_url: bool = Query(default=False),
+):
+    return await _stream_result(result_id, direct_url=direct_url)
 
 
-async def _stream_result(result_id: str):
-    record, _ = await manager.prepare_cached_track(result_id)
+async def _stream_result(result_id: str, *, direct_url: bool):
+    record, _ = await manager.prepare_cached_track(result_id, direct_url=direct_url)
     file_name = _safe_file_name(record.title, record.artist)
 
     # If file_path is a remote URL (starts with http), redirect to it
@@ -188,15 +188,17 @@ async def _stream_result(result_id: str):
 async def download(
     result_id: str,
     device_id: Optional[str] = Query(default=None),
+    direct_url: bool = Query(default=False),
 ):
-    return await _download_result(result_id, device_id)
+    return await _download_result(result_id, device_id, direct_url=direct_url)
 
 
-async def _download_result(result_id: str, device_id: Optional[str]):
+async def _download_result(result_id: str, device_id: Optional[str], *, direct_url: bool):
     record, _ = await manager.prepare_cached_track(
         result_id,
         device_id=device_id,
         block_device_duplicate=True,
+        direct_url=direct_url,
     )
     file_name = _safe_file_name(record.title, record.artist)
 

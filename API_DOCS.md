@@ -498,6 +498,34 @@ Recommended client states:
 
 - `remote`: track is from provider and not cached.
 - `server_cached`: `availability.in_server_cache = true`.
+
+## Direct URL passthrough (all providers)
+
+You can request that the backend return the provider's direct upstream stream URL instead of blocking for server caching by adding `direct_url=true` to `/stream` or `/download` calls. This is implemented generically for all providers.
+
+Key behaviours:
+- If a cached MP3 exists for the requested `result_id`, the server serves the cached file as usual (cache has priority).
+- If no cached MP3 exists and `direct_url=true`, the backend resolves a direct stream URL via the provider's `get_stream(track_id)` and returns a redirect to that URL so the player can begin immediate playback.
+- If enabled for a provider, the backend will warm the server cache in the background after returning the direct URL. This is a per-provider option (`cache_direct_links_in_background`) and will make subsequent plays faster without delaying the first-play experience.
+
+Usage examples:
+
+```
+GET /stream/{result_id}?direct_url=true
+GET /download/{result_id}?direct_url=true&device_id=phone-01
+```
+
+Notes for integrators and implementers:
+- Providers should implement `get_stream(track_id) -> str` to return an upstream HTTP(s) or HLS (m3u8) URL when available.
+- Provider `download(track_id, output_path, stream_url=None)` now accepts an optional `stream_url` so background caching can reuse the already-resolved URL and avoid a second upstream lookup.
+- The previous VK-only redirect toggle (`SLEEWAVE_REDIRECT_TO_ORIGINAL_URL`) has been removed; prefer the request parameter and per-provider background-caching setting.
+- The VK provider now prefers `yt-dlp` for HLS/m3u8 streams (faster fragment handling); the older ffmpeg subprocess approach is kept commented in code for reference.
+
+Security & operational notes:
+- Returning upstream URLs exposes those hosts to the client — ensure your client trusts the source.
+- Background caching respects the server cache size and eviction policy; it will not exceed configured `SLEEWAVE_CACHE_MAX_MB`.
+
+If you want a changelog entry or example client snippet for handling redirected HLS (m3u8) playback, I can add it to this document or a separate `CHANGELOG.md`.
 - `device_saved`: `availability.on_device = true`.
 
 Use `availability.preferred_origin` to choose the best default:

@@ -344,15 +344,23 @@ class VKProvider(IMusicProvider):
         direct_url, _, _, _ = direct_url_info
         return direct_url
 
-    async def download(self, track_id: str, output_path: str) -> Optional[str]:
+    async def download(
+        self,
+        track_id: str,
+        output_path: str,
+        stream_url: Optional[str] = None,
+    ) -> Optional[str]:
         url = "https://vk.com/audio"+track_id
         final_path = Path(output_path)
 
-        direct_url_info = await self.get_direct_url(url=url)
-        if not direct_url_info:
-            raise RuntimeError("Failed to get direct download URL from VK.")
-
-        direct_url, title, artist, thumbnail = direct_url_info
+        direct_url = stream_url
+        if not direct_url:
+            direct_url_info = await self.get_direct_url(url=url)
+            if not direct_url_info:
+                raise RuntimeError("Failed to get direct download URL from VK.")
+            direct_url, title, artist, thumbnail = direct_url_info
+        else:
+            title = artist = thumbnail = None
         # Prefer yt-dlp for VK HLS/m3u8 streams (faster and handles fragments).
         # Keep the old ffmpeg-based subprocess flow commented out for future reference.
         # ensure_ffmpeg_available()  # yt-dlp postprocessors still require ffmpeg
@@ -376,14 +384,14 @@ class VKProvider(IMusicProvider):
             'socket_timeout': 10,
             'fragment_retries': 3,
             'buffersize': 1024 * 1024 * 64,
-            # "postprocessors": [
-            #     {
-            #         "key": "FFmpegExtractAudio",
-            #         "preferredcodec": "mp3",
-            #         "preferredquality": "192",
-            #     }
-            # ],
-            "postprocessor_args": [],
+            "postprocessors": [
+                {
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": "mp3",
+                    "preferredquality": "192",
+                }
+            ],
+            # "postprocessor_args": [],
             "final_ext": "mp3",
         }
 
@@ -395,7 +403,7 @@ class VKProvider(IMusicProvider):
             with YoutubeDL(ytdlp_options) as ydl:
                 info = ydl.extract_info(direct_url, download=True)
 
-                downloaded_path = ydl.prepare_filename(info)
+                downloaded_path = Path(ydl.prepare_filename(info)).with_suffix(".mp3")
 
             return str(downloaded_path)
 
