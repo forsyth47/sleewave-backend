@@ -229,6 +229,25 @@ uvicorn app.main:app --reload
 
 The backend will be available at [http://127.0.0.1:8000](http://127.0.0.1:8000).
 
+<details>
+<summary>Using UV Manager (Recommended)</summary>
+
+Ensure you have UV installed from [here.](https://docs.astral.sh/uv/getting-started/installation/#pypi)
+
+
+After git cloning, to install dependencies, run:
+
+
+```bash
+uv sync              # install dependencies
+
+uv run poe dev  # for development at localhost:8000
+uv run poe start # for production at port 0.0.0.0:8000, configure more at pyproject.toml
+```
+
+</details>
+
+
 ## Notes
 
 - This repository is ready for Flutter integration, but the Flutter client still needs to call `/device-library/sync` or `/device-library/confirm-download` so the backend can suppress duplicates correctly.

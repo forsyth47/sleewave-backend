@@ -3,6 +3,6 @@ uvicorn[standard]
 pydantic
 python-dotenv
 httpx
-yt-dlp
+yt-dlp[default]>=0a0
 mutagen
 ytmusicapi
