@@ -209,7 +209,7 @@ Environment variables:
 - `SLEEWAVE_YTDLP_COOKIES_FILE` - optional path to a Netscape cookies.txt file for `yt-dlp`
 - `SLEEWAVE_YTDLP_COOKIES_FROM_BROWSER` - optional browser cookie source such as `chrome`, `firefox:default`, or `chrome:Profile 1`
 
-Cookie env precedence is `SLEEWAVE_YTDLP_COOKIES_FILE`, then `SLEEWAVE_YTDLP_COOKIES_BASE64`, then `SLEEWAVE_YTDLP_COOKIES`, then `SLEEWAVE_YTDLP_COOKIES_FROM_BROWSER`. The backend loads `app/.env` on startup.
+Cookie env precedence is `SLEEWAVE_YTDLP_COOKIES_FILE`, then `SLEEWAVE_YTDLP_COOKIES_BASE64`, then `SLEEWAVE_YTDLP_COOKIES`, then `SLEEWAVE_YTDLP_COOKIES_FROM_BROWSER`. The backend loads `app/.env` on startup, with root `.env` as a fallback. Relative cookie paths are resolved from the repository root. Use `cookies/yt_cookies.txt` for a Netscape-format file placed in the `cookies` directory.
 
 ## Run locally
 

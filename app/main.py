@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Optional
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 from fastapi import FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -28,7 +29,12 @@ from app.domain.models import (
 from app.services.errors import MusicServiceError
 from app.services.music_manager import MusicManager
 
-load_dotenv(Path(__file__).resolve().parent / ".env")
+app_dir = Path(__file__).resolve().parent
+project_root = app_dir.parent
+load_dotenv(app_dir / ".env")
+for name, value in dotenv_values(project_root / ".env").items():
+    if value is not None and not os.getenv(name):
+        os.environ[name] = value
 
 logger = logging.getLogger(__name__)
 

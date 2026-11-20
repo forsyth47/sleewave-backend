@@ -488,7 +488,7 @@ Downloads require `ffmpeg` in `PATH`, because `yt-dlp` uses it to convert audio 
 | `SLEEWAVE_YTDLP_COOKIES_FILE` | unset | Path to a Netscape cookies.txt file for `yt-dlp` authentication. |
 | `SLEEWAVE_YTDLP_COOKIES_FROM_BROWSER` | unset | Browser cookie source for `yt-dlp`, for example `chrome`, `firefox:default`, or `chrome:Profile 1`. |
 
-Cookie env precedence is `SLEEWAVE_YTDLP_COOKIES_FILE`, then `SLEEWAVE_YTDLP_COOKIES_BASE64`, then `SLEEWAVE_YTDLP_COOKIES`, then `SLEEWAVE_YTDLP_COOKIES_FROM_BROWSER`.
+Cookie env precedence is `SLEEWAVE_YTDLP_COOKIES_FILE`, then `SLEEWAVE_YTDLP_COOKIES_BASE64`, then `SLEEWAVE_YTDLP_COOKIES`, then `SLEEWAVE_YTDLP_COOKIES_FROM_BROWSER`. The backend loads `app/.env`, then uses root `.env` only for variables not already set. Relative cookie paths are resolved from the repository root.
 
 ## Client Implementation Notes
 

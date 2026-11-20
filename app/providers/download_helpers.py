@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import base64
 import binascii
+import logging
 import os
 import shutil
 import tempfile
 from pathlib import Path
+
+
+logger = logging.getLogger(__name__)
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 def ensure_ffmpeg_available() -> None:
@@ -25,7 +30,11 @@ def ytdlp_auth_options() -> dict:
     raw_cookie_data = os.getenv("SLEEWAVE_YTDLP_COOKIES")
 
     if cookie_file:
-        options["cookiefile"] = str(Path(cookie_file).expanduser().resolve())
+        resolved_cookie_file = _resolve_cookie_file(cookie_file)
+        if resolved_cookie_file:
+            options["cookiefile"] = str(resolved_cookie_file)
+        else:
+            logger.warning("Configured yt-dlp cookie file does not exist: %s", cookie_file)
     elif cookie_data:
         options["cookiefile"] = _cookies_file_from_env(cookie_data)
     elif raw_cookie_data:
@@ -34,6 +43,22 @@ def ytdlp_auth_options() -> dict:
         options["cookiesfrombrowser"] = _parse_cookies_from_browser(cookies_from_browser)
 
     return options
+
+
+def _resolve_cookie_file(cookie_file: str) -> Path | None:
+    configured_path = Path(cookie_file).expanduser()
+    if configured_path.is_absolute():
+        return configured_path.resolve() if configured_path.is_file() else None
+
+    candidates = (
+        PROJECT_ROOT / configured_path,
+        Path.cwd() / configured_path,
+    )
+    for candidate in candidates:
+        resolved_candidate = candidate.resolve()
+        if resolved_candidate.is_file():
+            return resolved_candidate
+    return None
 
 
 def _cookies_file_from_env(cookie_data: str) -> str:
